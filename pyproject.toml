@@ -40,6 +40,7 @@ robot = [
 dev = [
     "black>=23.0",
     "ruff>=0.1.0",
+    "responses>=0.25",
 ]
 
 [project.urls]
