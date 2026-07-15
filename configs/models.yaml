@@ -10,7 +10,7 @@ vllm:
   gpu_memory_utilization: 0.85
 
 dino:
-  model_id: "facebook/dino-vitb16"
+  model_id: "IDEA-Research/grounding-dino-base"
   device: "cuda"
   patch_size: 16
   image_size: 518

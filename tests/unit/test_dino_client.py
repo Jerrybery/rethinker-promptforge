@@ -91,6 +91,19 @@ class TestMockMode:
         det = client.detect(image)[0]
         assert det.bbox == pytest.approx([200.0, 100.0, 600.0, 300.0])
 
+    def test_bbox_scales_back_to_original_coordinates(self, client: DINOClient) -> None:
+        """Non-square images exercise separate scale_x / scale_y handling."""
+        image = np.zeros((123, 456, 3), dtype=np.uint8)
+        det = client.detect(image)[0]
+        assert det.bbox == pytest.approx(
+            [
+                456 * 0.25,
+                123 * 0.25,
+                456 * 0.75,
+                123 * 0.75,
+            ]
+        )
+
     def test_grayscale_image(self, client: DINOClient) -> None:
         gray = np.zeros((100, 200), dtype=np.uint8)
         det = client.detect(gray)[0]
@@ -100,11 +113,19 @@ class TestMockMode:
 class TestPreprocessing:
     def test_resizes_to_multiple_of_patch_size(self, client: DINOClient) -> None:
         image = np.zeros((123, 456, 3), dtype=np.uint8)
-        preprocessed, scale = client._preprocess_image(image)
+        preprocessed, scale_x, scale_y = client._preprocess_image(image)
         assert preprocessed.shape[2] == 3
         assert preprocessed.shape[0] % client.patch_size == 0
         assert preprocessed.shape[1] % client.patch_size == 0
-        assert scale != 1.0
+        assert scale_x != 1.0
+        assert scale_y != 1.0
+
+    def test_separate_xy_scales_for_non_square_image(self, client: DINOClient) -> None:
+        image = np.zeros((123, 456, 3), dtype=np.uint8)
+        preprocessed, scale_x, scale_y = client._preprocess_image(image)
+        assert scale_x == pytest.approx(preprocessed.shape[1] / 456)
+        assert scale_y == pytest.approx(preprocessed.shape[0] / 123)
+        assert scale_x != pytest.approx(scale_y)
 
     def test_respects_disable_image_size(self, tmp_path: Path) -> None:
         path = tmp_path / "models.yaml"
@@ -123,9 +144,10 @@ dino:
         )
         client = DINOClient(config_path=path)
         image = np.zeros((100, 200, 3), dtype=np.uint8)
-        preprocessed, scale = client._preprocess_image(image)
+        preprocessed, scale_x, scale_y = client._preprocess_image(image)
         assert preprocessed.shape == image.shape
-        assert scale == 1.0
+        assert scale_x == 1.0
+        assert scale_y == 1.0
 
     def test_logs_resize(self, client: DINOClient, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
         mock_logger = MagicMock()
@@ -161,8 +183,10 @@ class TestAPIMode:
         assert len(results) == 1
         det = results[0]
         assert det.label == "mug"
-        _, scale = api_client._preprocess_image(sample_image)
-        assert det.bbox == pytest.approx([v / scale for v in [10.0, 20.0, 30.0, 40.0]])
+        _, scale_x, scale_y = api_client._preprocess_image(sample_image)
+        assert det.bbox == pytest.approx(
+            [10.0 / scale_x, 20.0 / scale_y, 30.0 / scale_x, 40.0 / scale_y]
+        )
         assert det.confidence == pytest.approx(0.87)
 
     @responses.activate
@@ -182,8 +206,10 @@ class TestAPIMode:
         results = api_client.detect(sample_image)
         assert len(results) == 1
         assert results[0].label == "cup"
-        _, scale = api_client._preprocess_image(sample_image)
-        assert results[0].bbox == pytest.approx([v / scale for v in [1.0, 2.0, 3.0, 4.0]])
+        _, scale_x, scale_y = api_client._preprocess_image(sample_image)
+        assert results[0].bbox == pytest.approx(
+            [1.0 / scale_x, 2.0 / scale_y, 3.0 / scale_x, 4.0 / scale_y]
+        )
         assert results[0].confidence == pytest.approx(0.77)
 
     @responses.activate
@@ -246,7 +272,7 @@ class TestAPIMode:
             f"{DINO_API_URL}/detect",
             json=_detection_response([{"label": "mug"}]),
         )
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError):
             api_client.detect(sample_image)
 
     @responses.activate
@@ -255,8 +281,25 @@ class TestAPIMode:
             f"{DINO_API_URL}/detect",
             json={"model": "test-dino", "detections": "not-a-list"},
         )
-        with pytest.raises(RuntimeError):
+        with pytest.raises(ValueError):
             api_client.detect(sample_image)
+
+    @responses.activate
+    def test_validation_errors_are_not_retried(self, config_path: Path, sample_image: np.ndarray) -> None:
+        client = DINOClient(
+            config_path=config_path,
+            mode="api",
+            max_retries=2,
+            base_delay=0.0,
+            max_delay=0.0,
+        )
+        responses.post(
+            f"{DINO_API_URL}/detect",
+            json={"model": "test-dino", "detections": "not-a-list"},
+        )
+        with pytest.raises(ValueError):
+            client.detect(sample_image)
+        assert len(responses.calls) == 1
 
     @responses.activate
     def test_no_authorization_when_api_key_missing(self, api_client: DINOClient, sample_image: np.ndarray) -> None:
@@ -299,7 +342,7 @@ class TestLocalMode:
         client.detect(sample_image)
         stub_calls = [
             call for call in mock_logger.info.call_args_list
-            if "Local DINO checkpoint not loaded" in str(call.args)
+            if "Local DINO mode is a placeholder" in str(call.args)
         ]
         assert len(stub_calls) == 1
 
@@ -308,11 +351,7 @@ class TestLocalMode:
         monkeypatch.setattr("perception.dino_client.logger", mock_logger)
         client = DINOClient(config_path=config_path, mode="local")
         client.detect(sample_image)
-        warning_calls = [
-            call for call in mock_logger.warning.call_args_list
-            if "returns empty detections" in str(call.args)
-        ]
-        assert len(warning_calls) == 0
+        assert mock_logger.warning.call_args_list == []
 
 
 class TestInputValidation:
@@ -332,7 +371,7 @@ class TestInputValidation:
 class TestRepoConfig:
     def test_repo_config_has_dino_keys(self) -> None:
         cfg = DINOClient(config_path=REPO_ROOT / "configs" / "models.yaml")
-        assert cfg.model_id == "facebook/dino-vitb16"
+        assert cfg.model_id == "IDEA-Research/grounding-dino-base"
         assert cfg.mode == "mock"
         assert cfg.device == "cuda"
         assert cfg.image_size == 518

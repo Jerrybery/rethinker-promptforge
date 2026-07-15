@@ -3,9 +3,9 @@
 Supports three runtime modes:
 - ``mock``: deterministic fake detections, useful for CI/offline tests.
 - ``api``: HTTP endpoint that returns label/bbox/confidence JSON.
-- ``local``: lazy-loading stub that logs once and returns empty detections.
-  Real checkpoint loading is intentionally not implemented to avoid
-  downloading large weights.
+- ``local``: intentional placeholder that returns empty detections. No
+  checkpoint is downloaded or loaded; real local inference is not
+  implemented.
 """
 
 from __future__ import annotations
@@ -55,7 +55,9 @@ class DINOClient:
                 f"Choose one of {sorted(self.VALID_MODES)}."
             )
 
-        self.model_id = cfg.get("model_id", "facebook/dino-vitb16")
+        self.model_id = cfg.get(
+            "model_id", "IDEA-Research/grounding-dino-base"
+        )
         self.device = cfg.get("device", "cuda")
         self.patch_size = int(cfg.get("patch_size", 16))
         self.image_size = int(cfg.get("image_size", 518))
@@ -66,7 +68,6 @@ class DINOClient:
         self.base_delay = base_delay
         self.max_delay = max_delay
 
-        self._model: Any | None = None
         self._model_loaded = False
 
         logger.info(
@@ -80,53 +81,63 @@ class DINOClient:
             self.base_url,
         )
 
-    def _encode_image(self, image: np.ndarray) -> str:
-        """Encode an RGB numpy image as a base64 PNG data URL."""
+    @staticmethod
+    def _to_rgb_uint8(image: np.ndarray) -> np.ndarray:
+        """Normalize ``image`` to a contiguous RGB ``uint8`` array.
+
+        Handles float ``[0, 1]`` inputs, integer inputs, grayscale, and RGBA.
+        Returns a new array; the input is never modified.
+        """
         if image.dtype != np.uint8:
             if image.max() <= 1.0:
-                image = (image * 255).astype(np.uint8)
+                rgb = (image * 255).astype(np.uint8)
             else:
-                image = image.astype(np.uint8)
-        if image.ndim == 2:
-            image = np.stack([image] * 3, axis=-1)
-        elif image.ndim == 3 and image.shape[2] == 4:
-            image = image[:, :, :3]
-        if image.ndim != 3 or image.shape[2] != 3:
+                rgb = image.astype(np.uint8)
+        else:
+            rgb = image.copy()
+
+        if rgb.ndim == 2:
+            rgb = np.stack([rgb] * 3, axis=-1)
+        elif rgb.ndim == 3 and rgb.shape[2] == 4:
+            rgb = rgb[:, :, :3]
+        elif rgb.ndim == 3 and rgb.shape[2] == 3:
+            pass
+        else:
             raise ValueError(
-                f"Expected an RGB or grayscale image, got shape {image.shape}"
+                f"Expected an RGB, RGBA, or grayscale image, got shape {image.shape}"
             )
+
+        if rgb.ndim != 3 or rgb.shape[2] != 3:
+            raise ValueError(
+                f"Expected an RGB image after normalization, got shape {rgb.shape}"
+            )
+        return rgb
+
+    def _encode_image(self, image: np.ndarray) -> str:
+        """Encode an RGB numpy image as a base64 PNG data URL."""
+        rgb = self._to_rgb_uint8(image)
         from PIL import Image
 
-        pil_image = Image.fromarray(image)
+        pil_image = Image.fromarray(rgb)
         buffer = io.BytesIO()
         pil_image.save(buffer, format="PNG")
         b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return f"data:image/png;base64,{b64}"
 
-    def _preprocess_image(self, image: np.ndarray) -> tuple[np.ndarray, float]:
-        """Resize ``image`` to a ViT-friendly size and return it plus scale.
+    def _preprocess_image(self, image: np.ndarray) -> tuple[np.ndarray, float, float]:
+        """Resize ``image`` to a ViT-friendly size and return it plus scales.
 
         The longer side is scaled to ``image_size`` (rounded down to a
-        multiple of ``patch_size``) while preserving aspect ratio. Returned
-        detections are scaled back to the original image coordinates.
+        multiple of ``patch_size``) while preserving aspect ratio. Because
+        width and height are rounded to patch multiples independently,
+        separate ``scale_x`` and ``scale_y`` factors are returned so
+        detection coordinates can be mapped back to the original image
+        precisely.
         """
-        if image.ndim == 2:
-            rgb = np.stack([image] * 3, axis=-1)
-        elif image.ndim == 3 and image.shape[2] == 4:
-            rgb = image[:, :, :3]
-        elif image.ndim == 3 and image.shape[2] == 3:
-            rgb = image.copy()
-        else:
-            raise ValueError(f"Expected an RGB or grayscale image, got shape {image.shape}")
-
-        if rgb.dtype != np.uint8:
-            if rgb.max() <= 1.0:
-                rgb = (rgb * 255).astype(np.uint8)
-            else:
-                rgb = rgb.astype(np.uint8)
+        rgb = self._to_rgb_uint8(image)
 
         if self.image_size <= 0 or self.patch_size <= 0:
-            return rgb, 1.0
+            return rgb, 1.0, 1.0
 
         orig_h, orig_w = rgb.shape[:2]
         max_side = max(orig_h, orig_w)
@@ -138,6 +149,9 @@ class DINOClient:
         new_h = max(int(round(orig_h * scale)) // self.patch_size * self.patch_size, self.patch_size)
         new_w = max(int(round(orig_w * scale)) // self.patch_size * self.patch_size, self.patch_size)
 
+        scale_x = new_w / orig_w
+        scale_y = new_h / orig_h
+
         if (new_h, new_w) != (orig_h, orig_w):
             from PIL import Image
 
@@ -145,15 +159,16 @@ class DINOClient:
             resized = pil_image.resize((new_w, new_h), Image.BILINEAR)
             rgb = np.array(resized)
             logger.info(
-                "Resized DINO input from {}x{} to {}x{} (scale={:.4f})",
+                "Resized DINO input from {}x{} to {}x{} (scale_x={:.4f}, scale_y={:.4f})",
                 orig_w,
                 orig_h,
                 new_w,
                 new_h,
-                scale,
+                scale_x,
+                scale_y,
             )
 
-        return rgb, scale
+        return rgb, scale_x, scale_y
 
     def _mock_detect(self, image: np.ndarray) -> list[DetectedObject]:
         """Return deterministic fake detections scaled to image dimensions."""
@@ -172,7 +187,11 @@ class DINOClient:
         ]
 
     def _api_detect(self, image: np.ndarray) -> list[DetectedObject]:
-        """Send the image to an API endpoint and parse detections."""
+        """Send the image to an API endpoint and parse detections.
+
+        Retries only on network/HTTP errors (``requests.RequestException``).
+        Response parsing and validation errors raise immediately.
+        """
         payload = {
             "model": self.model_id,
             "image": self._encode_image(image),
@@ -182,7 +201,7 @@ class DINOClient:
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
 
-        last_exception: Exception | None = None
+        last_exception: requests.RequestException | None = None
         for attempt in range(self.max_retries + 1):
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=60)
@@ -190,9 +209,11 @@ class DINOClient:
                 data = response.json()
                 detections = data.get("detections", [])
                 if not isinstance(detections, list):
-                    raise ValueError(f"detections must be a list, got {type(detections)}")
+                    raise ValueError(
+                        f"detections must be a list, got {type(detections)}"
+                    )
                 return [self._parse_detection(item) for item in detections]
-            except (requests.RequestException, KeyError, ValueError, TypeError) as exc:
+            except requests.RequestException as exc:
                 last_exception = exc
                 logger.warning(
                     "DINO API request failed (attempt {}/{}): {}",
@@ -210,8 +231,6 @@ class DINOClient:
     @staticmethod
     def _parse_detection(item: Any) -> DetectedObject:
         """Convert a raw detection dict into a validated ``DetectedObject``."""
-        if isinstance(item, DetectedObject):
-            return item
         if not isinstance(item, dict):
             raise ValueError(f"Detection item must be a dict, got {type(item)}")
         bbox = item.get("bbox") or item.get("box")
@@ -224,10 +243,15 @@ class DINOClient:
         )
 
     def _local_detect(self, image: np.ndarray) -> list[DetectedObject]:
-        """Stub for local checkpoint inference; no weights are downloaded."""
+        """Placeholder for local checkpoint inference.
+
+        ``local`` mode is intentionally stubbed: it returns empty detections
+        without downloading or loading any model weights.
+        """
         if not self._model_loaded:
             logger.info(
-                "Local DINO checkpoint not loaded (stub). model_id={}",
+                "Local DINO mode is a placeholder and does not load weights; "
+                "returning empty detections. model_id={}",
                 self.model_id,
             )
             self._model_loaded = True
@@ -241,14 +265,14 @@ class DINOClient:
 
         Returns:
             A list of ``DetectedObject`` instances. Empty list when no
-            objects are detected or when using the local stub.
+            objects are detected or when using the local placeholder stub.
         """
         if not isinstance(image, np.ndarray):
             raise TypeError(f"image must be a numpy ndarray, got {type(image)}")
         if image.ndim not in (2, 3):
             raise ValueError(f"image must be 2D or 3D, got shape {image.shape}")
 
-        preprocessed, scale = self._preprocess_image(image)
+        preprocessed, scale_x, scale_y = self._preprocess_image(image)
 
         if self.mode == "mock":
             detections = self._mock_detect(preprocessed)
@@ -260,9 +284,18 @@ class DINOClient:
             # Defensive: should never happen because __init__ validates mode.
             raise RuntimeError(f"Unsupported DINO mode: {self.mode}")
 
-        if scale != 1.0:
+        if scale_x != 1.0 or scale_y != 1.0:
             detections = [
-                det.model_copy(update={"bbox": [coord / scale for coord in det.bbox]})
+                det.model_copy(
+                    update={
+                        "bbox": [
+                            det.bbox[0] / scale_x,
+                            det.bbox[1] / scale_y,
+                            det.bbox[2] / scale_x,
+                            det.bbox[3] / scale_y,
+                        ]
+                    }
+                )
                 for det in detections
             ]
 
