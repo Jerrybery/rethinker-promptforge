@@ -1,0 +1,38 @@
+# Robot hardware, camera, workspace, and safety configuration.
+
+robot:
+  model: "franka_panda"
+  arm_dof: 7
+  gripper: "franka_hand"
+  gripper_dof: 1
+
+camera:
+  extrinsic:
+    # 4x4 homogeneous transform (camera to base)
+    - [1.0, 0.0, 0.0, 0.5]
+    - [0.0, 1.0, 0.0, 0.0]
+    - [0.0, 0.0, 1.0, 0.8]
+    - [0.0, 0.0, 0.0, 1.0]
+  intrinsic:
+    width: 640
+    height: 480
+    fx: 600.0
+    fy: 600.0
+    cx: 320.0
+    cy: 240.0
+  depth_scale: 0.001
+
+workspace_bounds:
+  x_min: 0.25
+  x_max: 0.75
+  y_min: -0.35
+  y_max: 0.35
+  z_min: 0.05
+  z_max: 0.6
+
+safety_limits:
+  max_linear_velocity: 0.25
+  max_angular_velocity: 1.0
+  max_gripper_width: 0.08
+  collision_stop_force: 10.0
+  enable_tactile_guard: true

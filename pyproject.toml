@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rethinker-promptforge"
+version = "0.1.0"
+description = "Rethinker + EmbodiedPromptForge: robotic manipulation via vision-language reasoning."
+requires-python = ">=3.10"
+readme = "README.md"
+license = {text = "MIT"}
+authors = [
+    {name = "Jerry", email = "jerry@example.com"},
+]
+keywords = ["robotics", "vlm", "manipulation", "prompt-engineering"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "pydantic>=2.0",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "open3d>=0.17",
+    "requests>=2.31",
+    "pyyaml>=6.0",
+    "pytest>=7.4",
+    "loguru>=0.7",
+]
+
+[project.optional-dependencies]
+robot = [
+    # RoboTwin fork dependency; pin once exact version/URL is known.
+]
+dev = [
+    "black>=23.0",
+    "ruff>=0.1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/jerry/rethinker-promptforge-project"
+Repository = "https://github.com/jerry/rethinker-promptforge-project"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
