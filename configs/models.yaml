@@ -17,6 +17,7 @@ dino:
   mode: "mock"
   base_url: "http://localhost:8002"
   api_key: null
+  checkpoint_path: null
 
 anygrasp:
   checkpoint_path: null

@@ -39,6 +39,26 @@ dino:
 
 
 @pytest.fixture
+def local_config_path(tmp_path: Path) -> Path:
+    path = tmp_path / "models-local.yaml"
+    path.write_text(
+        """
+dino:
+  model_id: test-dino
+  device: cpu
+  patch_size: 16
+  image_size: 0
+  mode: local
+  checkpoint_path: /fake/checkpoint
+  base_url: http://localhost:8002
+  api_key: null
+""",
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.fixture
 def sample_image() -> np.ndarray:
     return np.zeros((100, 200, 3), dtype=np.uint8)
 
@@ -329,29 +349,96 @@ class TestAPIMode:
 
 
 class TestLocalMode:
-    def test_returns_empty(self, config_path: Path, sample_image: np.ndarray) -> None:
+    @staticmethod
+    def _patch_transformers(
+        monkeypatch: pytest.MonkeyPatch,
+        torch: Any,
+        bboxes: list[list[float]] | None = None,
+        scores: list[float] | None = None,
+        labels: list[int] | None = None,
+    ) -> tuple[MagicMock, MagicMock, MagicMock, MagicMock]:
+        import transformers
+
+        bboxes = bboxes or []
+        scores = scores or []
+        labels = labels or []
+
+        mock_model = MagicMock()
+        mock_model.config.id2label = {0: "mock_cat"}
+        mock_processor = MagicMock()
+        mock_processor.return_value = {"pixel_values": torch.zeros((1, 3, 224, 224))}
+
+        result = {
+            "scores": torch.tensor(scores, dtype=torch.float32),
+            "labels": torch.tensor(labels, dtype=torch.int64),
+            "boxes": torch.tensor(bboxes, dtype=torch.float32),
+        }
+        mock_processor.post_process_object_detection.return_value = [result]
+
+        model_from_pretrained = MagicMock(return_value=mock_model)
+        processor_from_pretrained = MagicMock(return_value=mock_processor)
+        monkeypatch.setattr(
+            transformers.AutoModelForObjectDetection, "from_pretrained", model_from_pretrained
+        )
+        monkeypatch.setattr(
+            transformers.AutoProcessor, "from_pretrained", processor_from_pretrained
+        )
+        return mock_model, mock_processor, model_from_pretrained, processor_from_pretrained
+
+    def test_local_without_checkpoint_raises(
+        self, config_path: Path, sample_image: np.ndarray
+    ) -> None:
         client = DINOClient(config_path=config_path, mode="local")
+        with pytest.raises(NotImplementedError, match="checkpoint_path is not configured"):
+            client.detect(sample_image)
+
+    def test_local_loads_and_caches_checkpoint(
+        self,
+        local_config_path: Path,
+        sample_image: np.ndarray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        transformers = pytest.importorskip("transformers")
+        torch = pytest.importorskip("torch")
+        mock_model, _mock_processor, model_from_pretrained, processor_from_pretrained = (
+            self._patch_transformers(monkeypatch, torch)
+        )
+
+        client = DINOClient(config_path=local_config_path)
+        client.detect(sample_image)
+        client.detect(sample_image)
+
+        model_from_pretrained.assert_called_once_with("/fake/checkpoint")
+        processor_from_pretrained.assert_called_once_with("/fake/checkpoint")
+        mock_model.eval.assert_called_once()
+        assert client._local_model is mock_model
+        assert client._local_processor is not None
+
+    def test_local_forward_returns_detections(
+        self,
+        local_config_path: Path,
+        sample_image: np.ndarray,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        torch = pytest.importorskip("torch")
+        self._patch_transformers(
+            monkeypatch,
+            torch,
+            bboxes=[[10.0, 20.0, 30.0, 40.0]],
+            scores=[0.88],
+            labels=[0],
+        )
+
+        client = DINOClient(config_path=local_config_path)
         results = client.detect(sample_image)
-        assert results == []
 
-    def test_stub_notice_logged_once(self, config_path: Path, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_logger = MagicMock()
-        monkeypatch.setattr("perception.dino_client.logger", mock_logger)
-        client = DINOClient(config_path=config_path, mode="local")
-        client.detect(sample_image)
-        client.detect(sample_image)
-        stub_calls = [
-            call for call in mock_logger.info.call_args_list
-            if "Local DINO mode is a placeholder" in str(call.args)
-        ]
-        assert len(stub_calls) == 1
-
-    def test_no_per_detection_warning(self, config_path: Path, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
-        mock_logger = MagicMock()
-        monkeypatch.setattr("perception.dino_client.logger", mock_logger)
-        client = DINOClient(config_path=config_path, mode="local")
-        client.detect(sample_image)
-        assert mock_logger.warning.call_args_list == []
+        assert len(results) == 1
+        det = results[0]
+        assert isinstance(det, DetectedObject)
+        assert det.label == "mock_cat"
+        assert det.confidence == pytest.approx(0.88)
+        # image_size=0 disables resizing, so coordinates are preserved.
+        assert det.bbox == pytest.approx([10.0, 20.0, 30.0, 40.0])
 
 
 class TestInputValidation:
@@ -376,3 +463,4 @@ class TestRepoConfig:
         assert cfg.device == "cuda"
         assert cfg.image_size == 518
         assert cfg.patch_size == 16
+        assert cfg.checkpoint_path is None

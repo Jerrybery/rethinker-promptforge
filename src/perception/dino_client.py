@@ -3,9 +3,8 @@
 Supports three runtime modes:
 - ``mock``: deterministic fake detections, useful for CI/offline tests.
 - ``api``: HTTP endpoint that returns label/bbox/confidence JSON.
-- ``local``: intentional placeholder that returns empty detections. No
-  checkpoint is downloaded or loaded; real local inference is not
-  implemented.
+- ``local``: lazy-loads a Hugging Face object-detection checkpoint from
+  ``checkpoint_path`` and runs inference locally.
 """
 
 from __future__ import annotations
@@ -30,6 +29,10 @@ class DINOClient:
     Configuration is read from ``configs/models.yaml`` under the ``dino`` key.
     ``image_size`` and ``patch_size`` are used to resize inputs to dimensions
     compatible with the vision transformer before running detection.
+
+    ``local`` mode loads ``AutoModelForObjectDetection`` and ``AutoProcessor``
+    from ``dino.checkpoint_path`` on first use and reuses them for subsequent
+    calls.
     """
 
     VALID_MODES = {"mock", "api", "local"}
@@ -58,6 +61,7 @@ class DINOClient:
         self.model_id = cfg.get(
             "model_id", "IDEA-Research/grounding-dino-base"
         )
+        self.checkpoint_path = cfg.get("checkpoint_path") or None
         self.device = cfg.get("device", "cuda")
         self.patch_size = int(cfg.get("patch_size", 16))
         self.image_size = int(cfg.get("image_size", 518))
@@ -68,13 +72,15 @@ class DINOClient:
         self.base_delay = base_delay
         self.max_delay = max_delay
 
-        self._model_loaded = False
+        self._local_model: Any | None = None
+        self._local_processor: Any | None = None
 
         logger.info(
-            "DINOClient initialized: mode={}, model_id={}, device={}, "
+            "DINOClient initialized: mode={}, model_id={}, checkpoint_path={}, device={}, "
             "image_size={}, patch_size={}, base_url={}",
             self.mode,
             self.model_id,
+            self.checkpoint_path,
             self.device,
             self.image_size,
             self.patch_size,
@@ -243,19 +249,78 @@ class DINOClient:
         )
 
     def _local_detect(self, image: np.ndarray) -> list[DetectedObject]:
-        """Placeholder for local checkpoint inference.
+        """Lazy-load a local Hugging Face checkpoint and run inference.
 
-        ``local`` mode is intentionally stubbed: it returns empty detections
-        without downloading or loading any model weights.
+        The checkpoint is loaded from ``self.checkpoint_path`` on the first
+        call and cached for reuse. ``image`` is expected to be a preprocessed
+        RGB ``uint8`` array; returned bounding boxes are in the preprocessed
+        pixel frame so ``detect()`` can scale them back to the original image.
         """
-        if not self._model_loaded:
-            logger.info(
-                "Local DINO mode is a placeholder and does not load weights; "
-                "returning empty detections. model_id={}",
-                self.model_id,
+        if not self.checkpoint_path:
+            raise NotImplementedError(
+                "Local DINO checkpoint_path is not configured; set it in "
+                "configs/models.yaml or use mode='mock'/'api'."
             )
-            self._model_loaded = True
-        return []
+
+        if self._local_model is None or self._local_processor is None:
+            try:
+                from transformers import AutoModelForObjectDetection, AutoProcessor
+                import torch
+            except ImportError as exc:
+                raise NotImplementedError(
+                    "Local DINO mode requires the `transformers` and `torch` packages."
+                ) from exc
+
+            self._local_model = AutoModelForObjectDetection.from_pretrained(
+                self.checkpoint_path
+            )
+            self._local_processor = AutoProcessor.from_pretrained(self.checkpoint_path)
+            self._local_model.to(self.device)
+            self._local_model.eval()
+            logger.info("Loaded local DINO checkpoint from {}", self.checkpoint_path)
+
+        rgb = self._to_rgb_uint8(image)
+        inputs = self._local_processor(images=rgb, return_tensors="pt")
+        inputs = {
+            name: tensor.to(self.device) for name, tensor in inputs.items()
+        }
+
+        import torch
+
+        with torch.no_grad():
+            outputs = self._local_model(**inputs)
+
+        target_sizes = torch.tensor([(rgb.shape[0], rgb.shape[1])])
+        results = self._local_processor.post_process_object_detection(
+            outputs, target_sizes=target_sizes, threshold=0.0
+        )[0]
+
+        scores = results["scores"].detach().cpu().numpy()
+        labels = results["labels"].detach().cpu().numpy()
+        boxes = results["boxes"].detach().cpu().numpy()
+
+        # Some checkpoints return normalized boxes; convert to pixel coords.
+        if boxes.size > 0 and boxes.max() <= 1.0:
+            height, width = rgb.shape[:2]
+            boxes[:, [0, 2]] *= width
+            boxes[:, [1, 3]] *= height
+
+        id2label = getattr(self._local_model.config, "id2label", None)
+        detections: list[DetectedObject] = []
+        for score, label_id, box in zip(scores, labels, boxes):
+            label = (
+                id2label.get(int(label_id), str(label_id))
+                if id2label
+                else str(label_id)
+            )
+            detections.append(
+                DetectedObject(
+                    label=label,
+                    bbox=[float(v) for v in box],
+                    confidence=float(score),
+                )
+            )
+        return detections
 
     def detect(self, image: np.ndarray) -> list[DetectedObject]:
         """Run object detection on ``image`` and return labeled boxes.
@@ -265,7 +330,7 @@ class DINOClient:
 
         Returns:
             A list of ``DetectedObject`` instances. Empty list when no
-            objects are detected or when using the local placeholder stub.
+            objects are detected.
         """
         if not isinstance(image, np.ndarray):
             raise TypeError(f"image must be a numpy ndarray, got {type(image)}")
