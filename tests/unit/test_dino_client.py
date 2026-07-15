@@ -74,6 +74,7 @@ class TestInitialization:
         assert client.mode in log_args
         assert client.model_id in log_args
         assert client.device in log_args
+        assert client.patch_size in log_args
 
 
 class TestMockMode:
@@ -94,6 +95,47 @@ class TestMockMode:
         gray = np.zeros((100, 200), dtype=np.uint8)
         det = client.detect(gray)[0]
         assert det.label == "mock_object"
+
+
+class TestPreprocessing:
+    def test_resizes_to_multiple_of_patch_size(self, client: DINOClient) -> None:
+        image = np.zeros((123, 456, 3), dtype=np.uint8)
+        preprocessed, scale = client._preprocess_image(image)
+        assert preprocessed.shape[2] == 3
+        assert preprocessed.shape[0] % client.patch_size == 0
+        assert preprocessed.shape[1] % client.patch_size == 0
+        assert scale != 1.0
+
+    def test_respects_disable_image_size(self, tmp_path: Path) -> None:
+        path = tmp_path / "models.yaml"
+        path.write_text(
+            """
+dino:
+  model_id: test-dino
+  device: cpu
+  patch_size: 16
+  image_size: 0
+  mode: mock
+  base_url: http://localhost:8002
+  api_key: null
+""",
+            encoding="utf-8",
+        )
+        client = DINOClient(config_path=path)
+        image = np.zeros((100, 200, 3), dtype=np.uint8)
+        preprocessed, scale = client._preprocess_image(image)
+        assert preprocessed.shape == image.shape
+        assert scale == 1.0
+
+    def test_logs_resize(self, client: DINOClient, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_logger = MagicMock()
+        monkeypatch.setattr("perception.dino_client.logger", mock_logger)
+        client.detect(sample_image)
+        resize_calls = [
+            call for call in mock_logger.info.call_args_list
+            if "Resized DINO input" in str(call.args)
+        ]
+        assert len(resize_calls) == 1
 
 
 class TestAPIMode:
@@ -119,7 +161,8 @@ class TestAPIMode:
         assert len(results) == 1
         det = results[0]
         assert det.label == "mug"
-        assert det.bbox == pytest.approx([10.0, 20.0, 30.0, 40.0])
+        _, scale = api_client._preprocess_image(sample_image)
+        assert det.bbox == pytest.approx([v / scale for v in [10.0, 20.0, 30.0, 40.0]])
         assert det.confidence == pytest.approx(0.87)
 
     @responses.activate
@@ -139,7 +182,8 @@ class TestAPIMode:
         results = api_client.detect(sample_image)
         assert len(results) == 1
         assert results[0].label == "cup"
-        assert results[0].bbox == pytest.approx([1.0, 2.0, 3.0, 4.0])
+        _, scale = api_client._preprocess_image(sample_image)
+        assert results[0].bbox == pytest.approx([v / scale for v in [1.0, 2.0, 3.0, 4.0]])
         assert results[0].confidence == pytest.approx(0.77)
 
     @responses.activate
@@ -215,14 +259,23 @@ class TestAPIMode:
             api_client.detect(sample_image)
 
     @responses.activate
-    def test_api_key_defaults_to_empty(self, api_client: DINOClient, sample_image: np.ndarray) -> None:
+    def test_no_authorization_when_api_key_missing(self, api_client: DINOClient, sample_image: np.ndarray) -> None:
         responses.post(
             f"{DINO_API_URL}/detect",
             json=_detection_response([]),
         )
         api_client.detect(sample_image)
-        auth = responses.calls[0].request.headers["Authorization"]
-        assert auth == "Bearer EMPTY"
+        assert "Authorization" not in responses.calls[0].request.headers
+
+    @responses.activate
+    def test_authorization_sent_when_api_key_set(self, config_path: Path, sample_image: np.ndarray) -> None:
+        client = DINOClient(config_path=config_path, mode="api", api_key="secret123")
+        responses.post(
+            f"{DINO_API_URL}/detect",
+            json=_detection_response([]),
+        )
+        client.detect(sample_image)
+        assert responses.calls[0].request.headers["Authorization"] == "Bearer secret123"
 
     @responses.activate
     def test_image_encoded_as_png(self, api_client: DINOClient, sample_image: np.ndarray) -> None:
@@ -233,10 +286,33 @@ class TestAPIMode:
 
 
 class TestLocalMode:
-    def test_returns_empty_and_logs(self, config_path: Path, sample_image: np.ndarray, caplog: pytest.LogCaptureFixture) -> None:
+    def test_returns_empty(self, config_path: Path, sample_image: np.ndarray) -> None:
         client = DINOClient(config_path=config_path, mode="local")
         results = client.detect(sample_image)
         assert results == []
+
+    def test_stub_notice_logged_once(self, config_path: Path, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_logger = MagicMock()
+        monkeypatch.setattr("perception.dino_client.logger", mock_logger)
+        client = DINOClient(config_path=config_path, mode="local")
+        client.detect(sample_image)
+        client.detect(sample_image)
+        stub_calls = [
+            call for call in mock_logger.info.call_args_list
+            if "Local DINO checkpoint not loaded" in str(call.args)
+        ]
+        assert len(stub_calls) == 1
+
+    def test_no_per_detection_warning(self, config_path: Path, sample_image: np.ndarray, monkeypatch: pytest.MonkeyPatch) -> None:
+        mock_logger = MagicMock()
+        monkeypatch.setattr("perception.dino_client.logger", mock_logger)
+        client = DINOClient(config_path=config_path, mode="local")
+        client.detect(sample_image)
+        warning_calls = [
+            call for call in mock_logger.warning.call_args_list
+            if "returns empty detections" in str(call.args)
+        ]
+        assert len(warning_calls) == 0
 
 
 class TestInputValidation:
@@ -259,3 +335,5 @@ class TestRepoConfig:
         assert cfg.model_id == "facebook/dino-vitb16"
         assert cfg.mode == "mock"
         assert cfg.device == "cuda"
+        assert cfg.image_size == 518
+        assert cfg.patch_size == 16

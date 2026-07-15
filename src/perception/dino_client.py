@@ -28,6 +28,8 @@ class DINOClient:
     """Object detector backed by a grounding model.
 
     Configuration is read from ``configs/models.yaml`` under the ``dino`` key.
+    ``image_size`` and ``patch_size`` are used to resize inputs to dimensions
+    compatible with the vision transformer before running detection.
     """
 
     VALID_MODES = {"mock", "api", "local"}
@@ -36,6 +38,7 @@ class DINOClient:
         self,
         config_path: str | Path | None = None,
         mode: str | None = None,
+        api_key: str | None = None,
         max_retries: int = 3,
         base_delay: float = 1.0,
         max_delay: float = 8.0,
@@ -57,7 +60,7 @@ class DINOClient:
         self.patch_size = int(cfg.get("patch_size", 16))
         self.image_size = int(cfg.get("image_size", 518))
         self.base_url = str(cfg.get("base_url", "http://localhost:8002")).rstrip("/")
-        self.api_key = cfg.get("api_key") or "EMPTY"
+        self.api_key = api_key or cfg.get("api_key") or None
 
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -68,11 +71,12 @@ class DINOClient:
 
         logger.info(
             "DINOClient initialized: mode={}, model_id={}, device={}, "
-            "image_size={}, base_url={}",
+            "image_size={}, patch_size={}, base_url={}",
             self.mode,
             self.model_id,
             self.device,
             self.image_size,
+            self.patch_size,
             self.base_url,
         )
 
@@ -88,7 +92,9 @@ class DINOClient:
         elif image.ndim == 3 and image.shape[2] == 4:
             image = image[:, :, :3]
         if image.ndim != 3 or image.shape[2] != 3:
-            raise ValueError(f"Expected an RGB or grayscale image, got shape {image.shape}")
+            raise ValueError(
+                f"Expected an RGB or grayscale image, got shape {image.shape}"
+            )
         from PIL import Image
 
         pil_image = Image.fromarray(image)
@@ -96,6 +102,58 @@ class DINOClient:
         pil_image.save(buffer, format="PNG")
         b64 = base64.b64encode(buffer.getvalue()).decode("utf-8")
         return f"data:image/png;base64,{b64}"
+
+    def _preprocess_image(self, image: np.ndarray) -> tuple[np.ndarray, float]:
+        """Resize ``image`` to a ViT-friendly size and return it plus scale.
+
+        The longer side is scaled to ``image_size`` (rounded down to a
+        multiple of ``patch_size``) while preserving aspect ratio. Returned
+        detections are scaled back to the original image coordinates.
+        """
+        if image.ndim == 2:
+            rgb = np.stack([image] * 3, axis=-1)
+        elif image.ndim == 3 and image.shape[2] == 4:
+            rgb = image[:, :, :3]
+        elif image.ndim == 3 and image.shape[2] == 3:
+            rgb = image.copy()
+        else:
+            raise ValueError(f"Expected an RGB or grayscale image, got shape {image.shape}")
+
+        if rgb.dtype != np.uint8:
+            if rgb.max() <= 1.0:
+                rgb = (rgb * 255).astype(np.uint8)
+            else:
+                rgb = rgb.astype(np.uint8)
+
+        if self.image_size <= 0 or self.patch_size <= 0:
+            return rgb, 1.0
+
+        orig_h, orig_w = rgb.shape[:2]
+        max_side = max(orig_h, orig_w)
+        target = (self.image_size // self.patch_size) * self.patch_size
+        if target == 0:
+            target = self.patch_size
+        scale = target / max_side
+
+        new_h = max(int(round(orig_h * scale)) // self.patch_size * self.patch_size, self.patch_size)
+        new_w = max(int(round(orig_w * scale)) // self.patch_size * self.patch_size, self.patch_size)
+
+        if (new_h, new_w) != (orig_h, orig_w):
+            from PIL import Image
+
+            pil_image = Image.fromarray(rgb)
+            resized = pil_image.resize((new_w, new_h), Image.BILINEAR)
+            rgb = np.array(resized)
+            logger.info(
+                "Resized DINO input from {}x{} to {}x{} (scale={:.4f})",
+                orig_w,
+                orig_h,
+                new_w,
+                new_h,
+                scale,
+            )
+
+        return rgb, scale
 
     def _mock_detect(self, image: np.ndarray) -> list[DetectedObject]:
         """Return deterministic fake detections scaled to image dimensions."""
@@ -120,10 +178,10 @@ class DINOClient:
             "image": self._encode_image(image),
         }
         url = f"{self.base_url}/detect"
-        headers = {
-            "Authorization": f"Bearer {self.api_key}",
-            "Content-Type": "application/json",
-        }
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
         last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
@@ -173,7 +231,6 @@ class DINOClient:
                 self.model_id,
             )
             self._model_loaded = True
-        logger.warning("Local DINO mode returns empty detections (checkpoint stub).")
         return []
 
     def detect(self, image: np.ndarray) -> list[DetectedObject]:
@@ -191,15 +248,23 @@ class DINOClient:
         if image.ndim not in (2, 3):
             raise ValueError(f"image must be 2D or 3D, got shape {image.shape}")
 
+        preprocessed, scale = self._preprocess_image(image)
+
         if self.mode == "mock":
-            detections = self._mock_detect(image)
+            detections = self._mock_detect(preprocessed)
         elif self.mode == "api":
-            detections = self._api_detect(image)
+            detections = self._api_detect(preprocessed)
         elif self.mode == "local":
-            detections = self._local_detect(image)
+            detections = self._local_detect(preprocessed)
         else:
             # Defensive: should never happen because __init__ validates mode.
             raise RuntimeError(f"Unsupported DINO mode: {self.mode}")
+
+        if scale != 1.0:
+            detections = [
+                det.model_copy(update={"bbox": [coord / scale for coord in det.bbox]})
+                for det in detections
+            ]
 
         if not detections:
             logger.info("DINO returned no detections.")

@@ -1,27 +1,32 @@
+# Model endpoint and runtime configuration.
+
 vllm:
-  model_id: openvla/openvla-7b
-  base_url: http://localhost:8000/v1
+  model_id: "openvla/openvla-7b"
+  base_url: "http://localhost:8000/v1"
   api_key: null
   temperature: 0.0
   max_tokens: 512
   tensor_parallel_size: 1
   gpu_memory_utilization: 0.85
+
 dino:
-  model_id: facebook/dino-vitb16
-  device: cuda
+  model_id: "facebook/dino-vitb16"
+  device: "cuda"
   patch_size: 16
   image_size: 518
-  mode: mock
-  base_url: http://localhost:8002
+  mode: "mock"
+  base_url: "http://localhost:8002"
   api_key: null
+
 anygrasp:
   checkpoint_path: null
-  device: cuda
+  device: "cuda"
   top_down_grasp: true
   max_grasp_width: 0.12
+
 cloud_critic:
   model_id: null
-  base_url: http://localhost:8001/v1
+  base_url: "http://localhost:8001/v1"
   api_key: null
   temperature: 0.0
   max_tokens: 256
