@@ -41,6 +41,15 @@ class VLLMClient:
         self.max_retries = max_retries
         self.base_delay = base_delay
         self.max_delay = max_delay
+        logger.info(
+            "VLLMClient initialized: model_id={}, base_url={}, "
+            "temperature={}, top_p={}, max_tokens={}",
+            self.model_id,
+            self.base_url,
+            self.temperature,
+            self.top_p,
+            self.max_tokens,
+        )
 
     def _encode_image(self, image: np.ndarray) -> str:
         """Encode an RGB numpy image as a base64 PNG data URL."""

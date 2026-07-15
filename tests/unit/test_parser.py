@@ -62,3 +62,25 @@ def test_extract_json_validation_error_raises() -> None:
     text = '{"answer": "not an int", "reason": "bad"}'
     with pytest.raises(ValueError):
         extract_json(text, DummySchema)
+
+
+def test_extract_json_skips_invalid_first_fence() -> None:
+    text = """
+```json
+not valid json
+```
+
+```json
+{"answer": 2, "reason": "second"}
+```
+"""
+    result = extract_json(text, DummySchema)
+    assert result.answer == 2
+    assert result.reason == "second"
+
+
+def test_extract_json_skips_invalid_first_inline_backtick() -> None:
+    text = 'Bad `not valid json` then good `{"answer": 3, "reason": "second"}`'
+    result = extract_json(text, DummySchema)
+    assert result.answer == 3
+    assert result.reason == "second"

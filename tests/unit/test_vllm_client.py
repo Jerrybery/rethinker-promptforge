@@ -6,6 +6,7 @@ import base64
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -190,3 +191,16 @@ def test_encode_image_float_normalizes() -> None:
     image = np.ones((2, 2, 3), dtype=np.float32)
     url = client._encode_image(image)
     assert url.startswith("data:image/png;base64,")
+
+
+def test_client_logs_configuration(config_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_logger = MagicMock()
+    monkeypatch.setattr("llm.vllm_client.logger", mock_logger)
+    client = VLLMClient(config_path=config_path)
+    mock_logger.info.assert_called_once()
+    log_args = mock_logger.info.call_args.args
+    assert client.model_id in log_args
+    assert client.base_url in log_args
+    assert client.temperature in log_args
+    assert client.top_p in log_args
+    assert client.max_tokens in log_args

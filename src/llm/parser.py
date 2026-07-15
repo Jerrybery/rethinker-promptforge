@@ -27,8 +27,7 @@ def extract_json(text: str, schema: type[T]) -> T:
     stripped = text.strip()
 
     for pattern in _CODE_FENCE_PATTERNS:
-        match = re.search(pattern, stripped, re.DOTALL)
-        if match:
+        for match in re.finditer(pattern, stripped, re.DOTALL):
             inner = match.group(1).strip()
             try:
                 return schema.model_validate(json.loads(inner))
