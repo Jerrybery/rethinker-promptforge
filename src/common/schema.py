@@ -130,3 +130,26 @@ class Episode(BaseModel):
     task_id: str = Field(..., min_length=1)
     steps: List[EpisodeStep] = Field(default_factory=list)
     metadata: Optional[Dict[str, Any]] = None
+
+
+class DetectedObject(BaseModel):
+    """A single object detection result.
+
+    Coordinates are expressed as top-left and bottom-right corners in
+    pixel space (x1, y1, x2, y2).
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    label: str = Field(..., min_length=1)
+    bbox: List[float] = Field(..., min_length=4, max_length=4)
+    confidence: float = Field(..., ge=0.0, le=1.0)
+
+    @model_validator(mode="after")
+    def _bbox_is_ordered(self) -> "DetectedObject":
+        x1, y1, x2, y2 = self.bbox
+        if x2 <= x1 or y2 <= y1:
+            raise ValueError(
+                f"bbox must satisfy x2 > x1 and y2 > y1, got {self.bbox}"
+            )
+        return self
