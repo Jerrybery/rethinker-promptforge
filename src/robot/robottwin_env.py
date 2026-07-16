@@ -143,6 +143,12 @@ def _build_setup_kwargs(
     args["task_name"] = task_name
     args["task_config"] = task_config_name
 
+    # Caller-supplied overrides take precedence over the config file *before*
+    # embodiment files are resolved so the chosen robot files match the
+    # requested embodiment.
+    if overrides:
+        args.update(overrides)
+
     embodiment_args = _resolve_embodiment_args(args, rt_root)
     args.update(embodiment_args)
 
@@ -154,9 +160,6 @@ def _build_setup_kwargs(
     args.setdefault("use_seed", False)
     args.setdefault("now_ep_num", 0)
     args.setdefault("save_path", "./data")
-
-    if overrides:
-        args.update(overrides)
 
     return args
 
@@ -194,6 +197,12 @@ def make_robottwin_env(
     Raises:
         RoboTwinEnvError: If the task class cannot be imported, the config is
             missing, or setup fails.
+
+    Note:
+        Path-sensitive setup is expected to happen inside ``env.setup_demo``.
+        This helper only guarantees that the working directory and ``sys.path``
+        point at the RoboTwin root during import and setup; lazy asset loading
+        that depends on paths must be handled by ``setup_demo`` itself.
     """
     setup_overrides = dict(overrides or {})
     setup_overrides.setdefault("seed", seed)

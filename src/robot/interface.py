@@ -131,9 +131,11 @@ class RoboTwinBackend(RobotBackend):
         self,
         config: dict[str, Any] | None = None,
         env: Any | None = None,
+        strict_stop: bool = True,
     ) -> None:
         self.config = config or {}
         self.env = env
+        self.strict_stop = strict_stop
 
     def _require_env(self) -> Any:
         if self.env is None:
@@ -227,6 +229,11 @@ class RoboTwinBackend(RobotBackend):
             env.stop()
         elif hasattr(env, "halt"):
             env.halt()
+        elif self.strict_stop:
+            raise NotImplementedError(
+                "RoboTwinBackend.stop() requires the wrapped environment to "
+                "expose ``stop()`` or ``halt()``; neither was found."
+            )
         else:
             logger.warning(
                 "RoboTwinBackend.stop() skipped: wrapped environment has no "

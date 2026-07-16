@@ -58,7 +58,10 @@ def load_task_definitions(path: str | Path) -> list[TaskDefinition]:
         raise FileNotFoundError(f"Task catalogue not found: {file_path}")
 
     with file_path.open("r", encoding="utf-8") as f:
-        data = yaml.safe_load(f)
+        try:
+            data = yaml.safe_load(f)
+        except yaml.YAMLError as exc:
+            raise ValueError(f"Task catalogue {file_path} contains malformed YAML") from exc
 
     if data is None:
         raise ValueError(f"Task catalogue {file_path} is empty")

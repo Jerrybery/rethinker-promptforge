@@ -6,6 +6,10 @@ real DINO model is required. It loads a task definition from the catalogue,
 builds the corresponding RoboTwin environment, wraps it in ``RobotInterface``,
 and runs ``ClosedLoopRunner``.
 
+For simulator-only runs the ``RoboTwinBackend`` is constructed with
+``strict_stop=False`` because the wrapped RoboTwin environment does not expose
+a ``stop()`` or ``halt()`` method.
+
 Usage::
 
     PYTHONPATH=src python scripts/run_hello_loop.py \\
@@ -170,7 +174,7 @@ def main(argv: list[str] | None = None) -> int:
             render_freq=0,
             overrides=initial_scene,
         )
-        backend = RoboTwinBackend(config=task.initial_scene, env=env)
+        backend = RoboTwinBackend(config=task.initial_scene, env=env, strict_stop=False)
         robot = RobotInterface(config_path=args.config_path, backend=backend)
 
     logger.info("Reading initial observation...")
