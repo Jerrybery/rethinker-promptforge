@@ -1,0 +1,29 @@
+# User Prompt: Rethinker Agent v0
+
+## Task goal
+
+{{task_goal}}
+
+## Current scene
+
+Detected objects (from DINO vision model):
+
+{{detections}}
+
+## Memory summary
+
+{{memory_summary}}
+
+## Previous feedback
+
+{{previous_feedback}}
+
+## Instructions
+
+1. Look at the RGB image and the detections above.
+2. Consider the task goal, memory, and previous feedback.
+3. Choose the most appropriate high-level mission type.
+4. Respond with exactly one JSON object matching the schema in the system prompt.
+5. Do not include Markdown prose outside the JSON object.
+
+Return only valid JSON.

@@ -36,7 +36,11 @@ class RethinkerOutput(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_joint_angles(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(values, dict):
+            return values
         for key in values:
+            if not isinstance(key, str):
+                continue
             lowered = key.lower()
             if "joint" in lowered and "angle" in lowered:
                 raise ValueError(
