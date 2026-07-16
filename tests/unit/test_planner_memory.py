@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
 
 import pytest
 
@@ -30,7 +29,7 @@ def _append_rounds(
     mem: PlannerMemory,
     count: int,
     plan: PlannerOutput,
-    last_feedback: Optional[Feedback] = None,
+    last_feedback: Feedback | None = None,
 ) -> None:
     for i in range(count):
         mem.append(
@@ -55,6 +54,13 @@ def test_capacity_truncation(plan: PlannerOutput) -> None:
     assert len(mem) == 2
     assert mem.rounds[0].round == 3
     assert mem.rounds[-1].round == 4
+
+
+def test_capacity_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="capacity must be a positive integer"):
+        PlannerMemory(capacity=0)
+    with pytest.raises(ValueError, match="capacity must be a positive integer"):
+        PlannerMemory(capacity=-3)
 
 
 def test_summarize_compression_and_recent(plan: PlannerOutput, feedback: Feedback) -> None:

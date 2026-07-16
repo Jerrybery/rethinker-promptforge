@@ -60,6 +60,13 @@ def test_capacity_truncation(answer: RethinkerOutput) -> None:
     assert mem.rounds[-1].round == 5
 
 
+def test_capacity_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="capacity must be a positive integer"):
+        RethinkerMemory(capacity=0)
+    with pytest.raises(ValueError, match="capacity must be a positive integer"):
+        RethinkerMemory(capacity=-2)
+
+
 def test_summarize_all_full_when_k_greater_than_length(answer: RethinkerOutput) -> None:
     mem = RethinkerMemory()
     _append_rounds(mem, 3, answer)
@@ -111,11 +118,12 @@ def test_summarize_truncation_deterministic(answer: RethinkerOutput) -> None:
     mem2 = RethinkerMemory(capacity=3)
     _append_rounds(mem1, 5, answer)
     _append_rounds(mem2, 5, answer)
-    assert mem1.summarize(k=2) == mem2.summarize(k=2)
-    assert "Round 2: RethinkerOutput" in mem1.summarize(k=2)
-    assert "Round 3 (RethinkerOutput)" in mem1.summarize(k=2)
-    assert "Round 4 (RethinkerOutput)" in mem1.summarize(k=2)
-    assert "Round 0" not in mem1.summarize(k=2)
+    summary = mem1.summarize(k=2)
+    assert summary == mem2.summarize(k=2)
+    assert "Round 2: RethinkerOutput" in summary
+    assert "Round 3 (RethinkerOutput)" in summary
+    assert "Round 4 (RethinkerOutput)" in summary
+    assert "Round 0" not in summary
 
 
 def test_to_dict_and_json(answer: RethinkerOutput, feedback: Feedback) -> None:
@@ -137,10 +145,3 @@ def test_to_dict_and_json(answer: RethinkerOutput, feedback: Feedback) -> None:
     dumped = mem.to_json()
     parsed = json.loads(dumped)
     assert parsed == data
-
-
-def test_capacity_must_be_at_least_one(answer: RethinkerOutput) -> None:
-    mem = RethinkerMemory(capacity=0)
-    _append_rounds(mem, 3, answer)
-    assert len(mem) == 1
-    assert mem.rounds[0].round == 2

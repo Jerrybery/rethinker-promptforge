@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Generic, Sequence, TypeVar
+from typing import Any, Generic, Protocol, Sequence, TypeVar
 
 from common.schema import BaseModel, Feedback
 
@@ -23,6 +23,16 @@ class _Round(Generic[OutputT]):
     feedback: Feedback | None = None
 
 
+class RoundView(Generic[OutputT], Protocol):
+    """Public read-only view of a single stored round."""
+
+    round: int
+    scene_token: str
+    query: str
+    answer: OutputT
+    feedback: Feedback | None
+
+
 class _Memory(Generic[OutputT]):
     """Fixed-size, deterministic memory for model rounds.
 
@@ -33,7 +43,10 @@ class _Memory(Generic[OutputT]):
     """
 
     def __init__(self, capacity: int = 100) -> None:
-        self._capacity = max(1, int(capacity))
+        capacity = int(capacity)
+        if capacity < 1:
+            raise ValueError(f"capacity must be a positive integer, got {capacity}")
+        self._capacity = capacity
         self._history: deque[_Round[OutputT]] = deque(maxlen=self._capacity)
 
     def append(
@@ -94,7 +107,7 @@ class _Memory(Generic[OutputT]):
         return len(self._history)
 
     @property
-    def rounds(self) -> Sequence[_Round[OutputT]]:
+    def rounds(self) -> Sequence[RoundView[OutputT]]:
         """Immutable view of the stored rounds, oldest first."""
         return tuple(self._history)
 
@@ -116,11 +129,9 @@ class _Memory(Generic[OutputT]):
 
     def _compress(self, record: _Round[OutputT]) -> str:
         fb = "with_feedback" if record.feedback is not None else "no_feedback"
-        mission = getattr(record.answer, "mission_type", "N/A")
         return (
             f"Round {record.round}: "
             f"{record.answer.__class__.__name__} "
-            f"mission={mission} "
             f"[{fb}]"
         )
 
