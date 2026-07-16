@@ -42,6 +42,9 @@ def rethinker_output() -> RethinkerOutput:
 def planner_output() -> PlannerOutput:
     return PlannerOutput(
         plan_id="plan-001",
+        mission=MissionType.PICK_AND_PLACE,
+        pick="red_mug",
+        place="saucer",
         trajectory_name="top_down_approach",
         waypoints=["approach", "grasp", "lift", "place"],
         gripper_action="open",
@@ -103,8 +106,17 @@ class TestRethinkerOutput:
 
 class TestPlannerOutput:
     def test_valid(self) -> None:
-        out = PlannerOutput(plan_id="plan-1", waypoints=["pre_grasp", "grasp"])
+        out = PlannerOutput(
+            plan_id="plan-1",
+            mission=MissionType.PICK_AND_PLACE,
+            pick="red_mug",
+            place="saucer",
+            waypoints=["pre_grasp", "grasp"],
+        )
         assert out.plan_id == "plan-1"
+        assert out.mission == MissionType.PICK_AND_PLACE
+        assert out.pick == "red_mug"
+        assert out.place == "saucer"
         assert out.waypoints == ["pre_grasp", "grasp"]
 
     def test_missing_plan_id_raises(self) -> None:

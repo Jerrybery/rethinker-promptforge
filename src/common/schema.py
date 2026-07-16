@@ -52,13 +52,18 @@ class RethinkerOutput(BaseModel):
 class PlannerOutput(BaseModel):
     """Semantic motion plan produced by the Planner.
 
-    The Planner must not emit concrete grasp/place 3D coordinates;
-    those are resolved later by perception/execution modules.
+    The Planner consumes Rethinker semantic analysis and DINO label sets
+    (no raw images) and emits target labels plus a high-level mission type.
+    It must not emit concrete grasp/place 3D coordinates; those are resolved
+    later by perception/execution modules.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     plan_id: str = Field(..., min_length=1)
+    mission: MissionType
+    pick: str = Field(..., min_length=1)
+    place: Optional[str] = None
     trajectory_name: Optional[str] = None
     waypoints: List[str] = Field(default_factory=list)
     approach_type: Optional[str] = None
@@ -67,7 +72,11 @@ class PlannerOutput(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def _reject_grasp_place_coordinates(cls, values: Dict[str, Any]) -> Dict[str, Any]:
+        if not isinstance(values, dict):
+            return values
         for key in values:
+            if not isinstance(key, str):
+                continue
             lowered = key.lower()
             if ("grasp" in lowered or "place" in lowered) and any(
                 token in lowered for token in ("coord", "position", "point", "pose")

@@ -6,7 +6,7 @@ import json
 
 import pytest
 
-from common.schema import Feedback, PlannerOutput
+from common.schema import Feedback, MissionType, PlannerOutput
 from planner.memory import PlannerMemory
 
 
@@ -14,6 +14,9 @@ from planner.memory import PlannerMemory
 def plan() -> PlannerOutput:
     return PlannerOutput(
         plan_id="plan-001",
+        mission=MissionType.PICK_AND_PLACE,
+        pick="mug",
+        place="saucer",
         trajectory_name="top_down",
         waypoints=["approach", "grasp", "place"],
         gripper_action="open",
