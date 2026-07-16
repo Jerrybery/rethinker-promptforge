@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
 from common.schema import EpisodeStep
@@ -21,6 +22,7 @@ class EpisodeLogger:
         self.log_path = Path(log_path)
         self.log_path.parent.mkdir(parents=True, exist_ok=True)
         self._file = self.log_path.open("a", encoding="utf-8")
+        self._closed = False
 
     @staticmethod
     def _now() -> str:
@@ -63,5 +65,22 @@ class EpisodeLogger:
         )
 
     def close(self) -> None:
-        """Close the underlying log file handle."""
+        """Close the underlying log file handle.
+
+        Safe to call multiple times.
+        """
+        if self._closed:
+            return
         self._file.close()
+        self._closed = True
+
+    def __enter__(self) -> EpisodeLogger:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
