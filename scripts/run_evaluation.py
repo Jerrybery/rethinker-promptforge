@@ -1,9 +1,26 @@
-"""CLI to run the evaluation harness over serialized episodes."""
+#!/usr/bin/env python3
+"""CLI to run the evaluation harness over serialized episodes.
+
+This script expects the project to be installed in editable mode or to be run
+with ``PYTHONPATH=src`` so that the top-level packages are importable.
+
+Usage::
+
+    PYTHONPATH=src python scripts/run_evaluation.py \\
+        --tasks-path data/tasks/hello_tasks.yaml \\
+        --episodes-jsonl /tmp/mock_episodes.jsonl
+"""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+SRC_DIR = REPO_ROOT / "src"
+if str(SRC_DIR) not in sys.path:
+    sys.path.insert(0, str(SRC_DIR))
 
 from common.schema import Episode
 from evaluation.harness import EvaluationResult, evaluate_tasks
