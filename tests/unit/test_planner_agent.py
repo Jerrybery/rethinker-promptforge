@@ -210,6 +210,46 @@ def test_act_allows_null_place(
     assert output.place is None
 
 
+def test_act_allows_stop_with_none_pick(
+    rethinker_output: RethinkerOutput,
+    dino_labels: list[str],
+) -> None:
+    ro = rethinker_output.model_copy(update={"mission_type": MissionType.STOP})
+    payload = {
+        "plan_id": "plan-stop",
+        "mission": "STOP",
+        "pick": "none",
+        "place": None,
+    }
+    agent = _make_agent(json.dumps(payload))
+    output = agent.act(
+        rethinker_output=ro,
+        dino_labels=dino_labels,
+    )
+    assert output.mission == MissionType.STOP
+    assert output.pick == "none"
+    assert output.place is None
+
+
+def test_act_stop_rejects_invalid_pick(
+    rethinker_output: RethinkerOutput,
+    dino_labels: list[str],
+) -> None:
+    ro = rethinker_output.model_copy(update={"mission_type": MissionType.STOP})
+    bad = {
+        "plan_id": "plan-bad",
+        "mission": "STOP",
+        "pick": "cup",
+        "place": None,
+    }
+    agent = _make_agent(json.dumps(bad))
+    with pytest.raises(ValueError, match="Pick label"):
+        agent.act(
+            rethinker_output=ro,
+            dino_labels=dino_labels,
+        )
+
+
 def test_registry_loads_v0() -> None:
     system, user = PromptRegistry.load("v0")
     assert "Planner" in system

@@ -59,7 +59,8 @@ class PlannerAgent:
 
         Returns:
             A validated PlannerOutput whose pick and place labels
-            are members of *dino_labels*.
+            are members of *dino_labels* (pick may be `"none"` when the
+            mission is `STOP`).
 
         Raises:
             ValueError: if the model response cannot be parsed into a valid
@@ -119,15 +120,10 @@ class PlannerAgent:
         label_set: set[str],
     ) -> None:
         """Ensure the parsed plan respects mission and label constraints."""
-        if not isinstance(output.mission, MissionType):
-            try:
-                MissionType(output.mission.value)
-            except ValueError as exc:
-                raise ValueError(
-                    f"Invalid mission type: {output.mission.value}"
-                ) from exc
-
-        if output.pick not in label_set:
+        stop_with_no_pick = (
+            output.mission is MissionType.STOP and output.pick == "none"
+        )
+        if not stop_with_no_pick and output.pick not in label_set:
             raise ValueError(
                 f"Pick label '{output.pick}' is not in the DINO label set"
             )
@@ -143,6 +139,6 @@ class PlannerAgent:
         return {
             "plan_id": "string (required, unique identifier)",
             "mission": "PICK_AND_PLACE | PICK_ONLY | MOVE_ASIDE | REOBSERVE | STOP",
-            "pick": "string (required, must be a DINO label)",
+            "pick": "string (required, must be a DINO label; STOP may use 'none')",
             "place": "string | null (must be a DINO label when not null)",
         }

@@ -15,7 +15,7 @@ You do not receive raw images and you do not output low-level control.
 1. Emit only the JSON object described below. No extra keys.
 2. Do not output joint angles, gripper positions, grasp points, place points, or any motor commands.
 3. Do not output 3D coordinates, Cartesian targets, trajectories, or waypoint coordinates.
-4. The `pick` and `place` values must be exact strings from the provided DINO label set.
+4. The `pick` and `place` values must be exact strings from the provided DINO label set, except for `STOP` missions where `pick` may be `"none"` if no label applies.
 5. If the Rethinker says the task is complete or unsafe, set `mission` to `STOP` and `pick` to the most relevant label or `none` if none applies.
 
 ## Output schema
@@ -26,7 +26,7 @@ Respond with a single JSON object matching this exact structure:
 {
   "plan_id": "string (required, unique identifier)",
   "mission": "PICK_AND_PLACE | PICK_ONLY | MOVE_ASIDE | REOBSERVE | STOP",
-  "pick": "string (required, must be a label from the DINO label set)",
+  "pick": "string (required, must be a label from the DINO label set; STOP may use 'none')",
   "place": "string | null (must be a label from the DINO label set when not null)"
 }
 ```
@@ -35,7 +35,7 @@ Field definitions:
 
 - `plan_id` (required): short unique identifier for this plan.
 - `mission` (required): high-level mission type; must be one of the enum values above.
-- `pick` (required): the DINO label of the object to interact with.
+- `pick` (required): the DINO label of the object to interact with; for `STOP` missions, use `"none"` when no label applies.
 - `place` (optional): the DINO label of the destination object/location; null for non-placement missions.
 
 ## Mission types
