@@ -11,6 +11,8 @@ from typing import Any
 import numpy as np
 import pytest
 
+from unittest.mock import patch
+
 from executor.primitives import PrimitiveLibrary, PrimitiveResult
 from perception.dino_client import DINOClient
 from robot.interface import RoboTwinBackend, RobotInterface
@@ -186,3 +188,32 @@ def test_robotwin_backend_read_state_handles_missing_env_attributes(
     backend = RoboTwinBackend(env=env_factory())
     with pytest.raises(RuntimeError, match=expected_pattern):
         backend.read_state()
+
+
+def test_robottwin_backend_stop_strict_default_raises() -> None:
+    """By default stop() raises when the env has no stop/halt method."""
+    backend = RoboTwinBackend(env=_FakeEnv())
+    with pytest.raises(NotImplementedError, match=r"``stop\(\)`` or ``halt\(\)``"):
+        backend.stop()
+
+
+def test_robottwin_backend_stop_non_strict_logs_warning() -> None:
+    """With strict_stop=False stop() warns instead of raising."""
+    backend = RoboTwinBackend(env=_FakeEnv(), strict_stop=False)
+    with patch("robot.interface.logger.warning") as mock_warning:
+        backend.stop()
+    mock_warning.assert_called_once()
+    assert "skipped" in mock_warning.call_args[0][0]
+
+
+def test_robottwin_backend_stop_delegates_to_env() -> None:
+    """stop() calls env.stop() when available regardless of strict_stop."""
+    calls: list[str] = []
+
+    class _StoppableEnv(_FakeEnv):
+        def stop(self) -> None:
+            calls.append("stop")
+
+    backend = RoboTwinBackend(env=_StoppableEnv())
+    backend.stop()
+    assert calls == ["stop"]

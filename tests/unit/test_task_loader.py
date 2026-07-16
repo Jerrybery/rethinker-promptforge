@@ -133,6 +133,14 @@ def test_malformed_catalogue_raises(tmp_path: Path) -> None:
         load_task_definitions(catalogue)
 
 
+def test_malformed_yaml_raises(tmp_path: Path) -> None:
+    """YAML parse errors must be wrapped as ValueError."""
+    catalogue = tmp_path / "broken.yaml"
+    catalogue.write_text("tasks: [unclosed", encoding="utf-8")
+    with pytest.raises(ValueError, match="malformed YAML"):
+        load_task_definitions(catalogue)
+
+
 def test_optional_fields_loaded() -> None:
     """initial_scene, success_criteria, and metadata are loaded when present."""
     tasks = load_task_definitions(HELLO_TASKS_PATH)
