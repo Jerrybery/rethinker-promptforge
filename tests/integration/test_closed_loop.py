@@ -183,13 +183,20 @@ def test_closed_loop_runner_full_episode(
     # Logger should have written metadata plus one line per step.
     assert runner.log_path.exists()
     lines = runner.log_path.read_text(encoding="utf-8").strip().split("\n")
-    assert len(lines) >= 3
+    assert len(lines) >= 4  # metadata + 2 steps + episode_finished
     events = [json.loads(line) for line in lines]
     assert events[0]["event"] == "metadata"
     step_events = [event for event in events if event["event"] == "step"]
     assert len(step_events) == 2
     assert step_events[0]["step_index"] == 0
     assert step_events[1]["step_index"] == 1
+
+    finish_events = [event for event in events if event["event"] == "episode_finished"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["payload"]["termination_reason"] == "stop"
+    assert finish_events[0]["payload"]["steps"] == 2
+    assert episode.metadata is not None
+    assert episode.metadata["termination_reason"] == "stop"
 
 
 def test_closed_loop_runner_uses_dino_detections(
@@ -279,6 +286,15 @@ def test_closed_loop_runner_failure_termination(
     assert episode.steps[0].feedback is not None
     assert episode.steps[0].feedback.success is False
 
+    assert episode.metadata is not None
+    assert episode.metadata["termination_reason"] == "failure"
+    lines = runner.log_path.read_text(encoding="utf-8").strip().split("\n")
+    events = [json.loads(line) for line in lines]
+    finish_events = [event for event in events if event["event"] == "episode_finished"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["payload"]["termination_reason"] == "failure"
+    assert finish_events[0]["payload"]["steps"] == 1
+
 
 def test_closed_loop_runner_max_rounds_guard(
     tmp_path: Path,
@@ -331,3 +347,79 @@ def test_closed_loop_runner_max_rounds_guard(
     episode = runner.run()
 
     assert len(episode.steps) == 3
+
+    assert episode.metadata is not None
+    assert episode.metadata["termination_reason"] == "max_rounds"
+    lines = runner.log_path.read_text(encoding="utf-8").strip().split("\n")
+    events = [json.loads(line) for line in lines]
+    finish_events = [event for event in events if event["event"] == "episode_finished"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["payload"]["termination_reason"] == "max_rounds"
+    assert finish_events[0]["payload"]["steps"] == 3
+
+
+class BrokenAgent:
+    """Agent that always raises, used to test runner exception cleanup."""
+
+    def act(self, **kwargs: Any) -> Any:
+        raise RuntimeError("planned failure")
+
+
+def test_closed_loop_runner_exception_closes_logger(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task: TaskUnit,
+    robot: RobotInterface,
+    dino: FakeDINO,
+) -> None:
+    """If a step raises, the runner must still close the logger and log failure."""
+    monkeypatch.chdir(tmp_path)
+
+    broken_agents = {
+        "rethinker": BrokenAgent(),
+        "planner": _SequenceAgent([]),
+        "executor": _SequenceAgent([]),
+    }
+
+    runner = ClosedLoopRunner(
+        task=task,
+        config_path=ROBOT_CONFIG_PATH,
+        agents=broken_agents,
+        robot=robot,
+        dino=dino,
+        max_rounds=5,
+    )
+    with pytest.raises(RuntimeError, match="planned failure"):
+        runner.run()
+
+    assert runner.logger._closed is True
+    assert runner.log_path.exists()
+    lines = runner.log_path.read_text(encoding="utf-8").strip().split("\n")
+    events = [json.loads(line) for line in lines]
+    assert events[0]["event"] == "metadata"
+    finish_events = [event for event in events if event["event"] == "episode_finished"]
+    assert len(finish_events) == 1
+    assert finish_events[0]["payload"]["termination_reason"] == "failure"
+    assert finish_events[0]["payload"]["steps"] == 0
+
+
+def test_closed_loop_runner_empty_action_library_no_fallback(
+    tmp_path: Path,
+    task: TaskUnit,
+    robot: RobotInterface,
+    dino: FakeDINO,
+    agents: dict[str, Any],
+) -> None:
+    """An explicit empty action_library in config must not be replaced by defaults."""
+    config_path = tmp_path / "empty_action_library.yaml"
+    config_path.write_text("runner:\n  action_library: []\n", encoding="utf-8")
+
+    runner = ClosedLoopRunner(
+        task=task,
+        config_path=config_path,
+        agents=agents,
+        robot=robot,
+        dino=dino,
+        max_rounds=5,
+    )
+    assert runner.action_library == []
