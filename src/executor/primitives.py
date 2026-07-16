@@ -201,4 +201,5 @@ class PrimitiveLibrary:
 
     def stop(self) -> PrimitiveResult:
         """Halt execution and report a clean stop."""
+        self.robot.stop()
         return PrimitiveResult(success=True, status="stopped")

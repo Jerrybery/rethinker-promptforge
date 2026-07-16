@@ -46,6 +46,10 @@ class RobotBackend(ABC):
     def reset(self) -> None:
         """Reset the robot to a known home state."""
 
+    @abstractmethod
+    def stop(self) -> None:
+        """Halt all robot motion immediately."""
+
 
 class MockBackend(RobotBackend):
     """Synthetic backend for offline tests.
@@ -91,6 +95,10 @@ class MockBackend(RobotBackend):
         self._current_pose = self._home_pose
         self._gripper_open = 1.0
         logger.debug("MockBackend reset to home")
+
+    def stop(self) -> None:
+        """Halt any ongoing motion (no-op in mock)."""
+        logger.debug("MockBackend stop (no-op)")
 
     def _synthetic_image(self) -> np.ndarray:
         """Return a deterministic synthetic RGB image."""
@@ -138,10 +146,48 @@ class RoboTwinBackend(RobotBackend):
 
     def read_state(self, arm_tag: str = "right") -> RobotState:
         env = self._require_env()
+
+        if not hasattr(env, "get_obs"):
+            raise RuntimeError(
+                "RoboTwinBackend env is missing required method 'get_obs'"
+            )
         obs = env.get_obs()
-        rgb = obs["observation"]["head_camera"]["rgb"]
+        if not isinstance(obs, dict) or "observation" not in obs:
+            raise RuntimeError(
+                "RoboTwinBackend env.get_obs() return value is missing the "
+                "expected 'observation' key"
+            )
+        observation = obs["observation"]
+        if not isinstance(observation, dict) or "head_camera" not in observation:
+            raise RuntimeError(
+                "RoboTwinBackend env observation is missing the expected "
+                "'head_camera' key"
+            )
+        head_camera = observation["head_camera"]
+        if not isinstance(head_camera, dict) or "rgb" not in head_camera:
+            raise RuntimeError(
+                "RoboTwinBackend env head_camera is missing the expected 'rgb' key"
+            )
+        rgb = head_camera["rgb"]
+
+        if not hasattr(env, "get_arm_pose"):
+            raise RuntimeError(
+                f"RoboTwinBackend env is missing required method 'get_arm_pose'"
+            )
         pose_vec = env.get_arm_pose(arm_tag)
-        gripper = getattr(env.robot, f"get_{arm_tag}_gripper_val")()
+
+        if not hasattr(env, "robot"):
+            raise RuntimeError(
+                "RoboTwinBackend env is missing required attribute 'robot'"
+            )
+        gripper_method = f"get_{arm_tag}_gripper_val"
+        if not hasattr(env.robot, gripper_method):
+            raise RuntimeError(
+                f"RoboTwinBackend env.robot is missing required method "
+                f"'{gripper_method}'"
+            )
+        gripper = getattr(env.robot, gripper_method)()
+
         return RobotState(
             pose=Pose.from_list(pose_vec),
             gripper=float(gripper),
@@ -173,6 +219,19 @@ class RoboTwinBackend(RobotBackend):
         env = self._require_env()
         if hasattr(env, "reset"):
             env.reset()
+
+    def stop(self) -> None:
+        """Halt all robot motion immediately."""
+        env = self._require_env()
+        if hasattr(env, "stop"):
+            env.stop()
+        elif hasattr(env, "halt"):
+            env.halt()
+        else:
+            raise NotImplementedError(
+                "RoboTwinBackend.stop() requires the wrapped environment to "
+                "expose ``stop()`` or ``halt()``; neither was found."
+            )
 
 
 class RobotInterface:
@@ -230,3 +289,7 @@ class RobotInterface:
     def reset(self) -> None:
         """Reset the robot to its home state."""
         return self._backend.reset()
+
+    def stop(self) -> None:
+        """Halt all robot motion immediately."""
+        return self._backend.stop()
