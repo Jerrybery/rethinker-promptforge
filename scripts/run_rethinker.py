@@ -64,7 +64,7 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    objects = [o.strip() for o in args.objects.split(",") if o.strip()] or None
+    objects = [o.strip() for o in args.objects.split(",") if o.strip()]
     task = TaskUnit(
         id=args.task_id,
         instruction=args.task_goal,
