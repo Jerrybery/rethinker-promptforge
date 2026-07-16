@@ -1,0 +1,67 @@
+tasks:
+  - id: hello-place-a2b-right
+    instruction: Pick up the object on the right and place it next to the target object.
+    mission_type: PICK_AND_PLACE
+    objects:
+      - source_object
+      - target_object
+    initial_scene:
+      task_name: place_a2b_right
+      embodiment:
+        - aloha-agilex
+      domain_randomization:
+        random_background: false
+        cluttered_table: false
+        clean_background_rate: 0
+        random_head_camera_dis: 0
+        random_table_height: 0
+        random_light: false
+        crazy_random_light_rate: 0
+      camera:
+        head_camera_type: D435
+        wrist_camera_type: D435
+        collect_head_camera: true
+        collect_wrist_camera: true
+      data_type:
+        rgb: true
+        third_view: false
+        depth: false
+        pointcloud: false
+        endpose: true
+        qpos: true
+        mesh_segmentation: false
+        actor_segmentation: false
+      seed: 0
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - source object is placed near target object
+      - both grippers are open
+    metadata:
+      robottwin_task_name: place_a2b_right
+      robottwin_task_config: demo_clean
+      source_arm: right
+      category: hello_loop
+      difficulty: easy
+
+  - id: hello-pick-only
+    instruction: Pick up the mug.
+    mission_type: PICK_ONLY
+    objects:
+      - mug
+    initial_scene:
+      task_name: place_empty_cup
+      embodiment:
+        - aloha-agilex
+      seed: 1
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - mug is grasped
+    metadata:
+      robottwin_task_name: place_empty_cup
+      robottwin_task_config: demo_clean
+      category: hello_loop
+      difficulty: easy

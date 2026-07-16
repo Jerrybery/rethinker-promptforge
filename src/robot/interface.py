@@ -228,9 +228,9 @@ class RoboTwinBackend(RobotBackend):
         elif hasattr(env, "halt"):
             env.halt()
         else:
-            raise NotImplementedError(
-                "RoboTwinBackend.stop() requires the wrapped environment to "
-                "expose ``stop()`` or ``halt()``; neither was found."
+            logger.warning(
+                "RoboTwinBackend.stop() skipped: wrapped environment has no "
+                "stop() or halt() method."
             )
 
 

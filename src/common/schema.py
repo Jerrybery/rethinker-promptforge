@@ -107,6 +107,8 @@ class TaskUnit(BaseModel):
     instruction: str = Field(..., min_length=1)
     mission_type: MissionType
     objects: List[str] = Field(default_factory=list)
+    initial_scene: Optional[Dict[str, Any]] = None
+    success_criteria: Optional[List[str]] = None
     metadata: Optional[Dict[str, Any]] = None
 
 
