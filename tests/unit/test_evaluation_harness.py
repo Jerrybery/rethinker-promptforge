@@ -16,6 +16,7 @@ from common.schema import (
     RethinkerOutput,
     TaskUnit,
 )
+from executor.schema import ExecutorAgentOutput
 from evaluation.harness import (
     CriterionResult,
     EpisodeEvaluation,
@@ -355,3 +356,151 @@ class TestPublicAPI:
         assert evaluate_tasks is not None
         assert SuccessChecker is not None
         assert KeywordSuccessChecker is not None
+
+
+def _agent_step(
+    step_index: int,
+    *,
+    risk: bool = False,
+    timestamp: float | None = None,
+    feedback_success: bool | None = True,
+) -> EpisodeStep:
+    """Step carrying an ExecutorAgentOutput so risk/timestamp fields exist."""
+    feedback = None if feedback_success is None else Feedback(success=feedback_success)
+    return EpisodeStep(
+        step_index=step_index,
+        task=_task(),
+        rethinker_output=RethinkerOutput(
+            mission_type=MissionType.PICK_AND_PLACE,
+            reasoning="mock reasoning",
+        ),
+        executor_output=ExecutorAgentOutput(
+            step_index=step_index,
+            joint_angles=[0.0],
+            gripper_state=0.5,
+            risk=risk,
+            timestamp=timestamp,
+            success=True,
+        ),
+        feedback=feedback,
+    )
+
+
+class TestRiskyActionMetric:
+    def test_counts_steps_whose_executor_output_flags_risk(self) -> None:
+        episode = _episode(
+            steps=[
+                _agent_step(0, risk=True),
+                _agent_step(1, risk=False),
+                _agent_step(2, risk=True),
+            ]
+        )
+        result = evaluate_episode(episode, _task())
+        assert result.risky_actions == 2
+
+    def test_base_executor_output_without_risk_field_counts_zero(self) -> None:
+        episode = _episode(steps=[_step(step_index=0), _step(step_index=1)])
+        assert evaluate_episode(episode, _task()).risky_actions == 0
+
+    def test_missing_executor_output_counts_zero(self) -> None:
+        step = EpisodeStep(
+            step_index=0,
+            task=_task(),
+            rethinker_output=RethinkerOutput(
+                mission_type=MissionType.STOP,
+                reasoning="stop immediately",
+            ),
+            executor_output=None,
+        )
+        episode = _episode(steps=[step])
+        assert evaluate_episode(episode, _task()).risky_actions == 0
+
+
+class TestReflectionMetric:
+    def test_counts_rounds_following_feedback(self) -> None:
+        steps = [
+            _agent_step(0, feedback_success=True),
+            _agent_step(1, feedback_success=None),
+            _agent_step(2, feedback_success=True),
+        ]
+        episode = _episode(steps=steps)
+        result = evaluate_episode(episode, _task())
+        # step 1 follows feedback -> reflection; step 2 follows no feedback -> not.
+        assert result.reflections == 1
+
+    def test_single_step_episode_has_no_reflections(self) -> None:
+        episode = _episode(steps=[_agent_step(0)])
+        assert evaluate_episode(episode, _task()).reflections == 0
+
+    def test_all_rounds_after_first_count_when_feedback_present(self) -> None:
+        episode = _episode(steps=[_agent_step(i) for i in range(3)])
+        assert evaluate_episode(episode, _task()).reflections == 2
+
+
+class TestRuntimeMetric:
+    def test_runtime_from_metadata(self) -> None:
+        episode = _episode(steps=[_agent_step(0)], metadata={"runtime_seconds": 12.5})
+        assert evaluate_episode(episode, _task()).runtime_seconds == 12.5
+
+    def test_runtime_from_executor_timestamps(self) -> None:
+        episode = _episode(
+            steps=[
+                _agent_step(0, timestamp=100.0),
+                _agent_step(1, timestamp=104.5),
+            ]
+        )
+        assert evaluate_episode(episode, _task()).runtime_seconds == 4.5
+
+    def test_runtime_none_when_not_derivable(self) -> None:
+        episode = _episode(steps=[_agent_step(0)])
+        assert evaluate_episode(episode, _task()).runtime_seconds is None
+
+    def test_metadata_runtime_takes_precedence_over_timestamps(self) -> None:
+        episode = _episode(
+            steps=[
+                _agent_step(0, timestamp=1.0),
+                _agent_step(1, timestamp=2.0),
+            ],
+            metadata={"runtime_seconds": 9.0},
+        )
+        assert evaluate_episode(episode, _task()).runtime_seconds == 9.0
+
+
+class TestAggregateMetricExtensions:
+    def test_failure_count_and_action_aggregates(self) -> None:
+        task = _task(criteria=["episode stopped"])
+        ep_ok = _episode(
+            episode_id="ok",
+            steps=[_agent_step(0, risk=True), _agent_step(1)],
+            termination_reason="stop",
+        )
+        ep_bad = _episode(
+            episode_id="bad",
+            steps=[_agent_step(0)],
+            termination_reason="failure",
+        )
+        result = evaluate_tasks([task], [ep_ok, ep_bad])
+        assert result.failure_count == 1
+        assert result.risky_action_count == 1
+        assert result.reflection_count == 1
+
+    def test_runtime_aggregates_over_available_episodes(self) -> None:
+        task = _task()
+        ep1 = _episode(
+            episode_id="e1", steps=[_agent_step(0)], metadata={"runtime_seconds": 10.0}
+        )
+        ep2 = _episode(
+            episode_id="e2", steps=[_agent_step(0)], metadata={"runtime_seconds": 20.0}
+        )
+        ep3 = _episode(episode_id="e3", steps=[_agent_step(0)])
+        result = evaluate_tasks([task], [ep1, ep2, ep3])
+        assert result.average_runtime_seconds == 15.0
+        assert result.min_runtime_seconds == 10.0
+        assert result.max_runtime_seconds == 20.0
+
+    def test_runtime_aggregates_none_without_data(self) -> None:
+        task = _task()
+        result = evaluate_tasks([task], [_episode(steps=[_step()])])
+        assert result.average_runtime_seconds is None
+        assert result.min_runtime_seconds is None
+        assert result.max_runtime_seconds is None

@@ -1,4 +1,32 @@
-"""Lightweight evaluation harness for task episodes."""
+"""Lightweight evaluation harness for task episodes.
+
+Metric definitions
+------------------
+- ``success``: all of the task's success criteria pass (see
+  :class:`KeywordSuccessChecker`); episodes with unknown task ids or failed
+  criteria count as failures.
+- ``failures``: aggregate count of episodes where ``success`` is False, with
+  the per-reason breakdown in ``termination_reason_counts``.
+- ``risky_actions``: per-episode count of steps whose ``executor_output``
+  carries a truthy ``risk`` flag. The shared
+  :class:`common.schema.ExecutorOutput` has no such field; the flag exists on
+  :class:`executor.schema.ExecutorAgentOutput`, so the check is done via
+  ``getattr(executor_output, "risk", False)`` and plain ``ExecutorOutput``
+  steps always count as non-risky.
+- ``reflections``: per-episode count of feedback-driven re-analysis rounds.
+  A step counts as one reflection event iff it is not the first step of the
+  episode and the immediately preceding step carries a non-None ``feedback``
+  object — i.e. the Rethinker was invoked with the previous round's feedback
+  and produced a new analysis in response to it. (For runner-produced
+  episodes, where every executed round records feedback, this equals
+  ``steps - 1``.)
+- ``runtime_seconds``: wall-clock duration of the episode. Resolution order:
+  (1) ``episode.metadata["runtime_seconds"]`` when numeric (recorded by the
+  runner / batch driver), (2) ``max - min`` of ``executor_output.timestamp``
+  across steps when at least two timestamps exist, (3) ``None`` when not
+  derivable. Aggregates (mean/min/max) are computed over episodes with a
+  known runtime only.
+"""
 
 from __future__ import annotations
 
@@ -38,6 +66,9 @@ class EpisodeEvaluation(BaseModel):
     steps: int = Field(..., ge=0)
     termination_reason: str = Field(default=TERMINATION_REASON_UNKNOWN)
     criteria: list[CriterionResult] = Field(default_factory=list)
+    risky_actions: int = Field(default=0, ge=0)
+    reflections: int = Field(default=0, ge=0)
+    runtime_seconds: float | None = Field(default=None, ge=0.0)
 
 
 class EvaluationResult(BaseModel):
@@ -53,6 +84,12 @@ class EvaluationResult(BaseModel):
     max_steps: int = Field(..., ge=0)
     termination_reason_counts: dict[str, int] = Field(default_factory=dict)
     per_episode: list[EpisodeEvaluation] = Field(default_factory=list)
+    failure_count: int = Field(default=0, ge=0)
+    risky_action_count: int = Field(default=0, ge=0)
+    reflection_count: int = Field(default=0, ge=0)
+    average_runtime_seconds: float | None = Field(default=None, ge=0.0)
+    min_runtime_seconds: float | None = Field(default=None, ge=0.0)
+    max_runtime_seconds: float | None = Field(default=None, ge=0.0)
 
 
 @runtime_checkable
@@ -130,6 +167,42 @@ class KeywordSuccessChecker:
         return False
 
 
+def _count_risky_actions(episode: Episode) -> int:
+    """Count steps whose executor output carries a truthy risk flag."""
+    count = 0
+    for step in episode.steps:
+        executor = step.executor_output
+        if executor is not None and bool(getattr(executor, "risk", False)):
+            count += 1
+    return count
+
+
+def _count_reflections(episode: Episode) -> int:
+    """Count feedback-driven re-analysis rounds (see module docstring)."""
+    count = 0
+    for previous, _current in zip(episode.steps, episode.steps[1:]):
+        if previous.feedback is not None:
+            count += 1
+    return count
+
+
+def _episode_runtime_seconds(episode: Episode) -> float | None:
+    """Derive episode wall-clock runtime, or None when not derivable."""
+    metadata = episode.metadata or {}
+    runtime = metadata.get("runtime_seconds")
+    if isinstance(runtime, (int, float)) and not isinstance(runtime, bool):
+        return float(runtime)
+    timestamps = [
+        step.executor_output.timestamp
+        for step in episode.steps
+        if step.executor_output is not None
+        and step.executor_output.timestamp is not None
+    ]
+    if len(timestamps) >= 2:
+        return float(max(timestamps) - min(timestamps))
+    return None
+
+
 def evaluate_episode(
     episode: Episode,
     task: TaskDefinition,
@@ -158,6 +231,9 @@ def evaluate_episode(
             "termination_reason", TERMINATION_REASON_UNKNOWN
         ),
         criteria=criteria,
+        risky_actions=_count_risky_actions(episode),
+        reflections=_count_reflections(episode),
+        runtime_seconds=_episode_runtime_seconds(episode),
     )
 
 
@@ -193,6 +269,9 @@ def evaluate_tasks(
                     "termination_reason", TERMINATION_REASON_UNKNOWN
                 ),
                 criteria=[],
+                risky_actions=_count_risky_actions(episode),
+                reflections=_count_reflections(episode),
+                runtime_seconds=_episode_runtime_seconds(episode),
             )
         else:
             evaluation = evaluate_episode(episode, task, checker)
@@ -207,6 +286,11 @@ def evaluate_tasks(
     average_steps = sum(step_counts) / total if total else 0.0
     min_steps = min(step_counts) if step_counts else 0
     max_steps = max(step_counts) if step_counts else 0
+    runtimes = [
+        evaluation.runtime_seconds
+        for evaluation in per_episode
+        if evaluation.runtime_seconds is not None
+    ]
 
     return EvaluationResult(
         total=total,
@@ -217,4 +301,10 @@ def evaluate_tasks(
         max_steps=max_steps,
         termination_reason_counts=dict(termination_reason_counts),
         per_episode=per_episode,
+        failure_count=total - success_count,
+        risky_action_count=sum(e.risky_actions for e in per_episode),
+        reflection_count=sum(e.reflections for e in per_episode),
+        average_runtime_seconds=(sum(runtimes) / len(runtimes) if runtimes else None),
+        min_runtime_seconds=min(runtimes) if runtimes else None,
+        max_runtime_seconds=max(runtimes) if runtimes else None,
     )

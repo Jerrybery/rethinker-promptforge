@@ -76,6 +76,13 @@ def _print_summary(result: EvaluationResult) -> None:
     print(f"Average steps:  {result.average_steps:.2f}")
     print(f"Min steps:      {result.min_steps}")
     print(f"Max steps:      {result.max_steps}")
+    print(f"Failure count:  {result.failure_count}")
+    print(f"Risky actions:  {result.risky_action_count}")
+    print(f"Reflections:    {result.reflection_count}")
+    if result.average_runtime_seconds is not None:
+        print(f"Avg runtime:    {result.average_runtime_seconds:.2f}s")
+        print(f"Min runtime:    {result.min_runtime_seconds:.2f}s")
+        print(f"Max runtime:    {result.max_runtime_seconds:.2f}s")
     print("Termination reason counts:")
     for reason, count in sorted(result.termination_reason_counts.items()):
         print(f"  {reason}: {count}")
