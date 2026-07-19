@@ -225,3 +225,25 @@ class TestEpisode:
         ep = Episode(id="ep-003", task_id="task-001")
         with pytest.raises(ValidationError):
             ep.task_id = "mutated"
+
+
+class TestRethinkerOutputHypothesis:
+    def test_hidden_hypothesis_and_risk_note_valid(self) -> None:
+        out = RethinkerOutput(
+            mission_type=MissionType.PICK_AND_PLACE,
+            reasoning="Mug visible; handle may be hidden.",
+            target_object="mug",
+            target_container="saucer",
+            hidden_hypothesis="The mug handle may be occluded by the box.",
+            risk_note="Grasp may slip on the smooth rim.",
+        )
+        assert out.hidden_hypothesis == "The mug handle may be occluded by the box."
+        assert out.risk_note == "Grasp may slip on the smooth rim."
+
+    def test_hypothesis_fields_default_to_none(self) -> None:
+        out = RethinkerOutput(
+            mission_type=MissionType.STOP,
+            reasoning="Task complete.",
+        )
+        assert out.hidden_hypothesis is None
+        assert out.risk_note is None

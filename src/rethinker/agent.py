@@ -29,7 +29,7 @@ class RethinkerAgent:
     def __init__(
         self,
         vllm_client: VLLMClient | None = None,
-        prompt_version: str = "v0",
+        prompt_version: str = "v1",
         config_path: "str | Path | None" = None,
     ) -> None:
         self.vllm_client = vllm_client or VLLMClient(config_path=config_path)
@@ -122,4 +122,6 @@ class RethinkerAgent:
             "target_object": "string | null",
             "target_container": "string | null",
             "arm_hint": "left | right | both | null",
+            "hidden_hypothesis": "string | null",
+            "risk_note": "string | null",
         }

@@ -177,5 +177,42 @@ def test_agent_uses_registry_defaults() -> None:
         "reasoning": "Done.",
     }))
     agent = RethinkerAgent(vllm_client=client)
-    assert agent.prompt_version == "v0"
+    assert agent.prompt_version == "v1"
     assert "{{task_goal}}" in agent._user_template
+
+
+def test_registry_loads_v1_requests_hypothesis() -> None:
+    system, user = PromptRegistry.load("v1")
+    assert "hidden_hypothesis" in system
+    assert "risk_note" in system
+    assert "{{task_goal}}" in user
+
+
+def test_registry_keeps_v0_loadable() -> None:
+    system, user = PromptRegistry.load("v0")
+    assert "hidden_hypothesis" not in system
+    versions = PromptRegistry.versions()
+    assert "v0" in versions
+    assert "v1" in versions
+
+
+def test_act_parses_hidden_hypothesis(
+    rgb_image: np.ndarray,
+    detections: list[DetectedObject],
+) -> None:
+    payload = {
+        "mission_type": "PICK_AND_PLACE",
+        "reasoning": "Mug visible; handle may be hidden.",
+        "target_object": "mug",
+        "target_container": "saucer",
+        "hidden_hypothesis": "The mug handle may be occluded.",
+        "risk_note": "Grasp may slip.",
+    }
+    agent = _make_agent(json.dumps(payload))
+    output = agent.act(
+        task_goal="Put the mug on the saucer.",
+        rgb_image=rgb_image,
+        detections=detections,
+    )
+    assert output.hidden_hypothesis == "The mug handle may be occluded."
+    assert output.risk_note == "Grasp may slip."

@@ -272,3 +272,21 @@ def test_agent_uses_registry_defaults() -> None:
     agent = PlannerAgent(vllm_client=client)
     assert agent.prompt_version == "v0"
     assert "{{rethinker_output}}" in agent._user_template
+
+
+def test_planner_receives_hidden_hypothesis(
+    rethinker_output: RethinkerOutput,
+    dino_labels: list[str],
+    valid_output: PlannerOutput,
+) -> None:
+    ro = rethinker_output.model_copy(
+        update={
+            "hidden_hypothesis": "The mug handle may be occluded.",
+            "risk_note": "Grasp may slip.",
+        }
+    )
+    agent = _make_agent(json.dumps(valid_output.model_dump()))
+    agent.act(rethinker_output=ro, dino_labels=dino_labels)
+    user_text = agent.vllm_client.chat.call_args.args[0][1]["content"]
+    assert "hidden_hypothesis: The mug handle may be occluded." in user_text
+    assert "risk_note: Grasp may slip." in user_text

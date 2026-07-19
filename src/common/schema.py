@@ -32,6 +32,8 @@ class RethinkerOutput(BaseModel):
     target_object: Optional[str] = None
     target_container: Optional[str] = None
     arm_hint: Optional[Literal["left", "right", "both"]] = None
+    hidden_hypothesis: Optional[str] = None
+    risk_note: Optional[str] = None
 
     @model_validator(mode="before")
     @classmethod

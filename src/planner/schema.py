@@ -39,6 +39,10 @@ class PlannerContext(BaseModel):
             parts.append(f"target_container: {ro.target_container}")
         if ro.arm_hint is not None:
             parts.append(f"arm_hint: {ro.arm_hint}")
+        if ro.hidden_hypothesis is not None:
+            parts.append(f"hidden_hypothesis: {ro.hidden_hypothesis}")
+        if ro.risk_note is not None:
+            parts.append(f"risk_note: {ro.risk_note}")
         return "\n".join(parts)
 
     @property
