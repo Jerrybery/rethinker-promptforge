@@ -15,6 +15,7 @@ from planner.agent import PlannerAgent
 from rethinker.agent import RethinkerAgent
 from rethinker.runner import ClosedLoopRunner
 from robot.interface import RobotInterface
+from tasks.loader import get_task_by_id, load_task_definitions
 
 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -23,8 +24,16 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--task-goal",
-        required=True,
-        help="Natural-language task goal, e.g. 'pick the mug and place it on the saucer'.",
+        default=None,
+        help="Natural-language task goal, e.g. 'pick the mug and place it on the saucer'. "
+        "Required unless --catalogue is given.",
+    )
+    parser.add_argument(
+        "--catalogue",
+        type=Path,
+        default=None,
+        help="Path to a task catalogue YAML. When given, --task-id selects the task "
+        "from the catalogue and --task-goal/--mission-type/--objects are ignored.",
     )
     parser.add_argument(
         "--config-path",
@@ -64,13 +73,19 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
 
-    objects = [o.strip() for o in args.objects.split(",") if o.strip()]
-    task = TaskUnit(
-        id=args.task_id,
-        instruction=args.task_goal,
-        mission_type=MissionType(args.mission_type),
-        objects=objects,
-    )
+    if args.catalogue is not None:
+        task = get_task_by_id(load_task_definitions(args.catalogue), args.task_id)
+    else:
+        if not args.task_goal:
+            print("error: --task-goal is required unless --catalogue is given", file=sys.stderr)
+            return 2
+        objects = [o.strip() for o in args.objects.split(",") if o.strip()]
+        task = TaskUnit(
+            id=args.task_id,
+            instruction=args.task_goal,
+            mission_type=MissionType(args.mission_type),
+            objects=objects,
+        )
 
     config_path = Path(args.config_path)
     robot = RobotInterface(config_path=config_path, mock=args.mock)

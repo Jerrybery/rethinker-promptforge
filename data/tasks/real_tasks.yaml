@@ -1,0 +1,160 @@
+# Real-robot (Realman-65B) evaluation task catalogue.
+#
+# These are the 4 real evaluation tasks for the Rethinker + EmbodiedPromptForge
+# closed loop. Each task also carries a RoboTwin sim approximation so the
+# closed-loop stack can be exercised in simulation; see docs/task_definitions.md
+# for layouts, occlusion sources, and sim-mapping caveats.
+tasks:
+  - id: clear_cluttered_plate_easy
+    instruction: Pick up the objects on the cluttered plate one by one and place them on the table next to the plate until the plate is empty.
+    mission_type: PICK_AND_PLACE
+    objects:
+      - plate
+      - cup
+      - spoon
+    initial_scene:
+      task_name: place_container_plate
+      embodiment:
+        - aloha-agilex
+      seed: 0
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - plate is empty (all objects removed from it)
+      - removed objects rest stably on the table next to the plate
+      - plate has not been knocked over or pushed off its original spot
+    metadata:
+      category: real_task
+      difficulty: easy
+      robot: realman-65b
+      max_rounds: 10
+      allowed_actions:
+        - PICK_AND_PLACE
+        - REOBSERVE
+        - STOP
+      occlusion_sources: []
+      failure_criteria:
+        - any object dropped outside the table workspace
+        - plate knocked over or pushed off its original spot
+        - max_rounds exceeded
+      robottwin_task_name: place_container_plate
+      robottwin_task_config: demo_clean
+
+  - id: get_hidden_pliers
+    instruction: Find the pliers hidden under the cloth on the workbench, move the cloth aside, and pick up the pliers.
+    mission_type: PICK_ONLY
+    objects:
+      - pliers
+      - cloth
+      - screwdriver
+      - wrench
+    initial_scene:
+      task_name: find_the_hidden_apple
+      embodiment:
+        - aloha-agilex
+      seed: 0
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - cloth has been moved aside so the pliers are fully visible
+      - pliers are grasped and lifted clear of the workbench
+      - distractor tools (screwdriver, wrench) remain on the workbench
+    metadata:
+      category: real_task
+      difficulty: hard
+      robot: realman-65b
+      max_rounds: 12
+      allowed_actions:
+        - REOBSERVE
+        - MOVE_ASIDE
+        - PICK_ONLY
+        - STOP
+      occlusion_sources:
+        - cloth fully covers the pliers at episode start
+        - surrounding distractor tools partially occlude the pliers from the head camera
+      failure_criteria:
+        - grasped an object that is not the pliers
+        - cloth knocked off the workbench
+        - pliers pushed out of the reachable workspace
+        - max_rounds exceeded
+      robottwin_task_name: find_the_hidden_apple
+      robottwin_task_config: demo_clean
+
+  - id: fruit_put_pot
+    instruction: Pick up the fruit from the table and put it into the pot.
+    mission_type: PICK_AND_PLACE
+    objects:
+      - fruit
+      - pot
+    initial_scene:
+      task_name: move_can_pot
+      embodiment:
+        - aloha-agilex
+      seed: 0
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - fruit is inside the pot
+      - pot remains upright at its original position
+      - gripper is open and clear of the pot at episode end
+    metadata:
+      category: real_task
+      difficulty: medium
+      robot: realman-65b
+      max_rounds: 8
+      allowed_actions:
+        - PICK_AND_PLACE
+        - REOBSERVE
+        - STOP
+      occlusion_sources:
+        - pot rim partially occludes the fruit from the head camera during approach
+        - gripper occludes the fruit during the grasp
+      failure_criteria:
+        - fruit dropped outside the pot
+        - pot tipped over or pushed off its original position
+        - max_rounds exceeded
+      robottwin_task_name: move_can_pot
+      robottwin_task_config: demo_clean
+
+  - id: cookie_put_pot
+    instruction: Pick up the cookie and put it into the pot.
+    mission_type: PICK_AND_PLACE
+    objects:
+      - cookie
+      - pot
+      - napkin
+    initial_scene:
+      task_name: place_bread_skillet
+      embodiment:
+        - aloha-agilex
+      seed: 0
+      render_freq: 0
+      save_data: false
+      collect_data: false
+    success_criteria:
+      - cookie is inside the pot and intact
+      - pot remains upright at its original position
+      - gripper is open and clear of the pot at episode end
+    metadata:
+      category: real_task
+      difficulty: medium
+      robot: realman-65b
+      max_rounds: 8
+      allowed_actions:
+        - REOBSERVE
+        - MOVE_ASIDE
+        - PICK_AND_PLACE
+        - STOP
+      occlusion_sources:
+        - napkin partially covers the cookie at episode start
+        - pot body occludes the cookie from the head camera once the cookie is near the rim
+      failure_criteria:
+        - cookie dropped outside the pot
+        - cookie broken or crumbled during grasping
+        - pot tipped over or pushed off its original position
+        - max_rounds exceeded
+      robottwin_task_name: place_bread_skillet
+      robottwin_task_config: demo_clean
