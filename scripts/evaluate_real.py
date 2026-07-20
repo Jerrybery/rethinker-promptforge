@@ -262,13 +262,21 @@ def _build_robot_for_task(
             f"Task {task.id} does not specify a RoboTwin task name "
             "(expected initial_scene.task_name or metadata.robottwin_task_name)."
         )
+    # Same kwarg promotion as forge.env.SimEnv: task_name/seed/render_freq
+    # become explicit kwargs; only the remaining scene keys are overrides.
+    # Single source of truth: forge.env._SCENE_KWARG_KEYS (keep in sync).
+    from forge.env import _SCENE_KWARG_KEYS
+
+    overrides = {
+        k: v for k, v in initial_scene.items() if k not in _SCENE_KWARG_KEYS
+    }
     env = make_robottwin_env(
         task_name=task_name,
         task_config_name=metadata.get("robottwin_task_config", "demo_clean"),
         repo_root=REPO_ROOT,
         seed=int(initial_scene.get("seed", 0)),
         render_freq=0,
-        overrides=initial_scene,
+        overrides=overrides,
     )
     backend = RoboTwinBackend(config=task.initial_scene, env=env, strict_stop=False)
     return RobotInterface(config_path=args.config_path, backend=backend)
