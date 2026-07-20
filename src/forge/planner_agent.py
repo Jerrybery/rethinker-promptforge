@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from loguru import logger
 
-from common.schema import Feedback, PlannerOutput, RethinkerOutput, MissionType
+from common.schema import Feedback, MissionType, PlannerOutput, RethinkerOutput
 from forge.memory import ForgePlannerMemory
 from planner.agent import PlannerAgent
 
