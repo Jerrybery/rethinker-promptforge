@@ -13,6 +13,7 @@ from forge.critic import (
 from forge.env import SimAction, SimEnv
 from forge.loader import load_forge_tasks, occlusion_sources
 from forge.memory import ForgePlannerMemory
+from forge.optimizer import OptimizerLLM, PromptEdit, apply_edits
 from forge.planner_agent import ForgePlannerAgent, obs_to_rethinker_output
 from forge.recorder import EpisodeRecorder, EpisodeRecording, KeyframeEvent
 
@@ -21,6 +22,8 @@ __all__ = [
     "EpisodeRecorder",
     "EpisodeRecording",
     "ForgePlannerAgent",
+    "OptimizerLLM",
+    "PromptEdit",
     "ForgePlannerMemory",
     "KeyframeEvent",
     "SimAction",
@@ -28,6 +31,7 @@ __all__ = [
     "StageEvaluation",
     "StageScores",
     "VideoStageCritic",
+    "apply_edits",
     "load_forge_tasks",
     "obs_to_rethinker_output",
     "occlusion_sources",
