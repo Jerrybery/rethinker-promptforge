@@ -271,6 +271,91 @@ def test_per_call_budget_overrides_default():
 
 
 # --------------------------------------------------------------------- #
+# propose_edits: symmetric rejected-text dedup (rejected_texts)
+# --------------------------------------------------------------------- #
+
+LONG_REASON = (
+    "The critic repeatedly observed the planner re-attempting the same failed "
+    "grasp across consecutive episodes without adjusting its approach, which "
+    "wasted steps and produced identical failure keyframes at step 2."
+)
+
+REJECTED_PROMPT_TEXT = (
+    "# Planner Prompt\n"
+    "\n"
+    "## Goal\n"
+    "\n"
+    "Pick the red block and place it in the bin.\n"
+    "\n"
+    "## Constraints\n"
+    "\n"
+    "- Move slowly near the bin.\n"
+    "- Verify color before grasping.\n"
+    "- Abort on occlusion.\n"
+    "- Re-plan after any collision.\n"
+)
+
+
+def test_novel_edit_with_identical_long_reason_survives_with_rejected_texts():
+    # Regression: with the old asymmetric fingerprint the long shared reason
+    # alone pushed the ratio over the threshold and dropped this edit.
+    rejected = [_rejected(LONG_REASON)]
+    payload = json.dumps([_edit_dict(new_text="See output.", reason=LONG_REASON)])
+    client = _client(payload)
+    opt = _optimizer(client)
+    edits = opt.propose_edits(
+        "prompt", [_eval()], rejected, rejected_texts=[REJECTED_PROMPT_TEXT]
+    )
+    assert [e.new_text for e in edits] == ["See output."]
+
+
+def test_near_copy_of_rejected_prompt_text_is_dropped_with_rejected_texts():
+    rejected = [_rejected("planner ignored the occlusion abort constraint")]
+    near_copy = REJECTED_PROMPT_TEXT.replace("Move slowly", "Move very slowly")
+    payload = json.dumps(
+        [
+            _edit_dict(
+                new_text=near_copy,
+                reason="planner ignored the occlusion abort constraint",
+            ),
+            _edit_dict(
+                new_text="State the target object color before each approach.",
+                reason="critic saw wrong-object grasp at step 3",
+            ),
+        ]
+    )
+    client = _client(payload)
+    opt = _optimizer(client)
+    edits = opt.propose_edits(
+        "prompt", [_eval()], rejected, rejected_texts=[REJECTED_PROMPT_TEXT]
+    )
+    assert [e.new_text for e in edits] == ["State the target object color before each approach."]
+
+
+def test_rejected_texts_length_mismatch_raises():
+    client = _client("[]")
+    opt = _optimizer(client)
+    with pytest.raises(ValueError, match="rejected_texts"):
+        opt.propose_edits("prompt", [_eval()], [_rejected("x")], rejected_texts=[])
+    assert client.chat.call_count == 0
+
+
+def test_reason_only_mode_still_drops_near_duplicate_reasons():
+    rejected = [_rejected("Never re-attempt a failed grasp more than once.")]
+    payload = json.dumps(
+        [
+            _edit_dict(
+                new_text="See output.",
+                reason="Never re-attempt a failed grasp more than once.",
+            )
+        ]
+    )
+    client = _client(payload)
+    opt = _optimizer(client)
+    assert opt.propose_edits("prompt", [_eval()], rejected) == []
+
+
+# --------------------------------------------------------------------- #
 # Budget configuration
 # --------------------------------------------------------------------- #
 

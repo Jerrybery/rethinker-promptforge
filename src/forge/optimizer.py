@@ -17,10 +17,15 @@ default budget lives in ``configs/models.yaml`` under
 
 Rejected-edit dedup heuristic: an edit is dropped as a near-duplicate when
 ``difflib.SequenceMatcher`` ratio over the normalized (lowercased,
-whitespace-collapsed) fingerprint ``"{edit_type}\\n{reason}\\n{new_text}"``
-vs. the rejected version's ``"{edit_type}\\n{reason}"`` is >=
-``similarity_threshold`` (default 0.8). The registry does not store the
-rejected edit's text body, so the comparison is reason-text based.
+whitespace-collapsed) fingerprints is >= ``similarity_threshold`` (default
+0.8). The candidate fingerprint is ``"{edit_type}\\n{reason}\\n{new_text}"``.
+When the caller passes ``rejected_texts`` (the rejected versions' prompt
+texts, positionally aligned with ``rejected_history`` — resolvable via
+``registry.text(version_id)``), the rejected fingerprint is the symmetric
+``"{edit_type}\\n{reason}\\n{text}"``, so a long shared reason alone cannot
+push the ratio over the threshold and mask a genuinely novel ``new_text``.
+Without ``rejected_texts`` the dedup falls back to the asymmetric two-part
+fingerprint ``"{edit_type}\\n{reason}"`` (logged at debug level).
 
 LLM backend: any client with ``chat(messages) -> str`` plus
 ``model_id``/``temperature``/``max_tokens`` attributes. The intended backend
@@ -194,6 +199,7 @@ class OptimizerLLM:
         evaluations: Sequence[StageEvaluation],
         rejected_history: Sequence[PromptVersion] = (),
         budget_chars: int | None = None,
+        rejected_texts: Sequence[str] | None = None,
     ) -> list[PromptEdit]:
         """Propose bounded edits to *best_prompt*.
 
@@ -210,15 +216,26 @@ class OptimizerLLM:
                 ``registry.history(agent, status="rejected")``.
             budget_chars: per-call budget override; defaults to the
                 instance budget from construction/config.
+            rejected_texts: prompt texts of the rejected versions,
+                positionally aligned with ``rejected_history`` (resolve via
+                ``registry.text(v.version_id)``). When provided, the dedup
+                fingerprint is symmetric (see module docstring); when
+                ``None``, dedup runs in reason-only mode.
 
         Raises:
             ValueError: if the LLM response stays unparseable after all
-                attempts.
+                attempts, or ``rejected_texts`` length differs from
+                ``rejected_history``.
         """
+        if rejected_texts is not None and len(rejected_texts) != len(rejected_history):
+            raise ValueError(
+                "rejected_texts must align positionally with rejected_history: "
+                f"got {len(rejected_texts)} texts for {len(rejected_history)} versions"
+            )
         budget = self.budget_chars if budget_chars is None else int(budget_chars)
         prompt = self._render(best_prompt, evaluations, rejected_history, budget)
         edits = self._call_and_parse(prompt)
-        kept = self._filter(edits, rejected_history, budget)
+        kept = self._filter(edits, rejected_history, budget, rejected_texts)
         logger.info(
             "propose_edits: target_agent={}, model_id={}, budget={}, "
             "proposed={}, kept={}",
@@ -285,6 +302,7 @@ class OptimizerLLM:
         edits: Sequence[PromptEdit],
         rejected_history: Sequence[PromptVersion],
         budget: int,
+        rejected_texts: Sequence[str] | None = None,
     ) -> list[PromptEdit]:
         on_target = []
         for edit in edits:
@@ -297,7 +315,20 @@ class OptimizerLLM:
                 continue
             on_target.append(edit)
 
-        fingerprints = [_fingerprint(v.edit.edit_type, v.edit.reason) for v in rejected_history]
+        if rejected_texts is None:
+            if rejected_history:
+                logger.debug(
+                    "rejected-edit dedup running in reason-only mode "
+                    "({} rejected version(s), no rejected_texts provided)",
+                    len(rejected_history),
+                )
+            fingerprints = [_fingerprint(v.edit.edit_type, v.edit.reason) for v in rejected_history]
+        else:
+            # Symmetric fingerprint: candidate new_text vs rejected prompt text.
+            fingerprints = [
+                _fingerprint(v.edit.edit_type, v.edit.reason, text)
+                for v, text in zip(rejected_history, rejected_texts)
+            ]
         novel = []
         for edit in on_target:
             fp = _fingerprint(edit.edit_type, edit.reason, edit.new_text)
