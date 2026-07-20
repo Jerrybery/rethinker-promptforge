@@ -40,6 +40,7 @@ class FakeRoboTwinEnv:
         self._success = success
         self.move_calls = 0
         self.stopped = False
+        self.close_env_calls = 0
         if not with_check_success:
             # Remove the method so SimEnv must fall back gracefully.
             self.check_success = None  # shadow class method with non-callable
@@ -74,6 +75,9 @@ class FakeRoboTwinEnv:
 
     def stop(self) -> None:
         self.stopped = True
+
+    def close_env(self, clear_cache: bool = False) -> None:
+        self.close_env_calls += 1
 
 
 TASK_CONFIG: dict[str, Any] = {
@@ -316,6 +320,56 @@ def test_rerender_clears_frames(sim_env: SimEnv) -> None:
     sim_env.step({"mission": "REOBSERVE"})
     sim_env.reset(TASK_CONFIG)
     assert len(sim_env.render()) == 1
+
+
+# --------------------------------------------------------------------- #
+# close / env release
+# --------------------------------------------------------------------- #
+
+
+def test_close_releases_wrapped_env(sim_env: SimEnv, fake_env: FakeRoboTwinEnv) -> None:
+    sim_env.reset(TASK_CONFIG)
+    sim_env.close()
+    assert fake_env.close_env_calls == 1
+    assert sim_env.task is None
+    assert sim_env.render() == []
+    with pytest.raises(RuntimeError, match="reset"):
+        sim_env.step({"mission": "STOP"})
+
+
+def test_close_is_idempotent_and_safe_before_reset(sim_env: SimEnv, fake_env: FakeRoboTwinEnv) -> None:
+    sim_env.close()  # no reset yet: must not raise
+    sim_env.reset(TASK_CONFIG)
+    sim_env.close()
+    sim_env.close()
+    assert fake_env.close_env_calls == 1
+
+
+def test_reset_closes_previous_env() -> None:
+    envs = [FakeRoboTwinEnv(), FakeRoboTwinEnv()]
+    calls = {"n": 0}
+
+    def factory(*args: Any, **kwargs: Any) -> FakeRoboTwinEnv:
+        env = envs[calls["n"]]
+        calls["n"] += 1
+        return env
+
+    sim_env = SimEnv(env_factory=factory)
+    sim_env.reset(TASK_CONFIG)
+    sim_env.reset(TASK_CONFIG)
+    assert envs[0].close_env_calls == 1
+    assert envs[1].close_env_calls == 0
+    assert calls["n"] == 2
+
+
+def test_reset_with_invalid_config_keeps_previous_env_open() -> None:
+    fake = FakeRoboTwinEnv()
+    sim_env = SimEnv(env_factory=make_factory(fake))
+    sim_env.reset(TASK_CONFIG)
+    bad = {k: v for k, v in TASK_CONFIG.items() if k != "initial_scene"}
+    with pytest.raises(ValueError, match="initial_scene"):
+        sim_env.reset(bad)
+    assert fake.close_env_calls == 0
 
 
 # --------------------------------------------------------------------- #

@@ -194,6 +194,10 @@ class SimEnv:
         task_config_name = metadata.get("robottwin_task_config", "demo_clean")
         overrides = {k: v for k, v in scene.items() if k not in _SCENE_KWARG_KEYS}
 
+        # Release the previous episode's env before building a new one so
+        # envs do not accumulate across epochs x tasks in long forge runs.
+        self.close()
+
         logger.info(
             "SimEnv.reset: task={!r} robottwin_task={!r} config={!r}",
             task.id,
@@ -278,6 +282,32 @@ class SimEnv:
     def render(self) -> list[np.ndarray]:
         """Return frames captured since the last reset (reset + each step)."""
         return list(self._frames)
+
+    def close(self) -> None:
+        """Release the wrapped RoboTwin env and drop episode state.
+
+        Idempotent and safe to call before any :meth:`reset`. Calls the
+        env's own release hook (RoboTwin base task: ``close_env()``,
+        falling back to a gym-style ``close()``) when it exposes one;
+        otherwise just drops the references.
+        """
+        env = self._env
+        self._env = None
+        self._robot = None
+        self._primitives = None
+        self._task = None
+        self._frames = []
+        self._step_index = 0
+        self._done = False
+        self._max_steps = None
+        if env is None:
+            return
+        releaser = getattr(env, "close_env", None) or getattr(env, "close", None)
+        if callable(releaser):
+            try:
+                releaser()
+            except Exception as exc:
+                logger.warning("SimEnv.close: env release raised: {}", exc)
 
     # ------------------------------------------------------------------ #
     # Internal helpers
