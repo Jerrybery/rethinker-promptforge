@@ -16,6 +16,7 @@ from forge.memory import ForgePlannerMemory
 from forge.optimizer import OptimizerLLM, PromptEdit, apply_edits
 from forge.planner_agent import ForgePlannerAgent, obs_to_rethinker_output
 from forge.recorder import EpisodeRecorder, EpisodeRecording, KeyframeEvent
+from forge.runner import EpochLog, ForgeLog, ForgeRunner
 from forge.validator import (
     PromptValidator,
     TaskValidationMetrics,
@@ -25,9 +26,12 @@ from forge.validator import (
 
 __all__ = [
     "CriticResult",
+    "EpochLog",
     "EpisodeRecorder",
     "EpisodeRecording",
+    "ForgeLog",
     "ForgePlannerAgent",
+    "ForgeRunner",
     "OptimizerLLM",
     "PromptEdit",
     "ForgePlannerMemory",

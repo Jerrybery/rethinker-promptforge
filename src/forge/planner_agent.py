@@ -146,6 +146,38 @@ class ForgePlannerAgent:
             prompt_version=version,
         )
 
+    def set_prompt_text(
+        self, system_template: str, user_template: str | None = None
+    ) -> None:
+        """Install raw prompt text on the wrapped planner (Task 3.8 bridge).
+
+        The forge registry (Task 3.5) versions raw prompt text, while
+        :class:`PlannerAgent` loads file-based templates via
+        ``PromptRegistry``. This installs the forge text directly on the
+        wrapped planner instance so forged prompts are evaluated without
+        touching the packaged prompt files.
+
+        Args:
+            system_template: system prompt text (the versioned artifact).
+            user_template: optional user template override; when omitted the
+                currently loaded user template is kept (its ``{{...}}``
+                placeholders keep working).
+
+        Raises:
+            ValueError: if ``system_template`` is blank.
+        """
+        if not system_template.strip():
+            raise ValueError("system_template must be non-empty")
+        logger.info(
+            "ForgePlannerAgent loading raw prompt text ({} chars)",
+            len(system_template),
+        )
+        # PlannerAgent exposes no public raw-text API; the loaded templates
+        # are plain instance attributes, replaced here (Task 3.8 bridge).
+        self._planner._system_template = system_template
+        if user_template is not None:
+            self._planner._user_template = user_template
+
     def act_from_obs(
         self,
         obs: dict[str, Any],

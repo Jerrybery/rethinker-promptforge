@@ -326,3 +326,54 @@ def test_forge_memory_serialization_parity(valid_output: PlannerOutput) -> None:
 def test_forge_memory_rejects_bad_capacity() -> None:
     with pytest.raises(ValueError, match="capacity"):
         ForgePlannerMemory(capacity=0)
+
+
+# --------------------------------------------------------------------- #
+# Raw prompt text bridge (Task 3.8)
+# --------------------------------------------------------------------- #
+
+
+def test_set_prompt_text_installs_system_template(obs: dict[str, Any]) -> None:
+    response = json.dumps(
+        {
+            "plan_id": "plan-x",
+            "mission": "PICK_AND_PLACE",
+            "pick": "mug",
+            "place": "saucer",
+        }
+    )
+    client = MagicMock()
+    client.chat = MagicMock(return_value=response)
+    agent = ForgePlannerAgent(vllm_client=client)
+
+    agent.set_prompt_text("STUB SYSTEM PROMPT")
+    agent.act_from_obs(obs)
+
+    messages = client.chat.call_args[0][0]
+    assert messages[0] == {"role": "system", "content": "STUB SYSTEM PROMPT"}
+
+
+def test_set_prompt_text_user_template_override(obs: dict[str, Any]) -> None:
+    response = json.dumps(
+        {
+            "plan_id": "plan-x",
+            "mission": "PICK_AND_PLACE",
+            "pick": "mug",
+            "place": "saucer",
+        }
+    )
+    client = MagicMock()
+    client.chat = MagicMock(return_value=response)
+    agent = ForgePlannerAgent(vllm_client=client)
+
+    agent.set_prompt_text("STUB SYSTEM", user_template="STUB USER TEMPLATE")
+    agent.act_from_obs(obs)
+
+    messages = client.chat.call_args[0][0]
+    assert messages[1] == {"role": "user", "content": "STUB USER TEMPLATE"}
+
+
+def test_set_prompt_text_rejects_blank() -> None:
+    agent = _make_agent("{}")
+    with pytest.raises(ValueError, match="system_template"):
+        agent.set_prompt_text("   ")
