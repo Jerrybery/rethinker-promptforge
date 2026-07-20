@@ -23,6 +23,7 @@ from forge.critic import (
     StageScores,
 )
 from forge.optimizer import PromptEdit, apply_edits
+from forge.recorder import EpisodeRecorder, EpisodeRecording
 from forge.registry import ForgePromptRegistry
 from forge.runner import EpochLog, ForgeLog, ForgeRunner
 from tasks.schema import TaskDefinition
@@ -221,6 +222,7 @@ def make_runner(
     train_tasks: list[TaskDefinition] | None = None,
     val_tasks: list[TaskDefinition] | None = None,
     initial_prompt_text: str | None = SEED_PROMPT,
+    recorder_factory: Any = None,
 ) -> tuple[ForgeRunner, ForgePromptRegistry, FakeEnv, FakeOptimizer]:
     registry = ForgePromptRegistry(tmp_path / "registry")
     env = env or FakeEnv()
@@ -235,6 +237,7 @@ def make_runner(
         val_tasks=val_tasks if val_tasks is not None else [VAL_TASK],
         run_dir=tmp_path / "run",
         initial_prompt_text=initial_prompt_text,
+        recorder_factory=recorder_factory or EpisodeRecorder,
     )
     return runner, registry, env, optimizer
 
@@ -490,6 +493,102 @@ def test_no_critic_means_no_evaluations(tmp_path: Path) -> None:
     runner, _, _, optimizer = make_runner(tmp_path, critic=None)
     runner.run(1)
     assert optimizer.calls[0]["evaluations"] == []
+
+
+class _SuccessOnTasksEnv(FakeEnv):
+    """FakeEnv variant reporting success only for the given task ids."""
+
+    def __init__(self, success_tasks: tuple[str, ...]) -> None:
+        super().__init__()
+        self._success_tasks = set(success_tasks)
+
+    def reset(self, task: TaskDefinition) -> dict[str, Any]:
+        self.set_success(task.id in self._success_tasks)
+        return super().reset(task)
+
+
+class _StubRecorder:
+    """Minimal EpisodeRecorder stand-in returning a metadata-only recording."""
+
+    def __init__(self) -> None:
+        self._episode_id = ""
+
+    def start_episode(self, episode_id: str, out_dir: Any, fps: float = 10.0) -> None:
+        self._episode_id = episode_id
+
+    def add_frame(self, frame: Any) -> None:
+        pass
+
+    def mark_event(self, step_index: int, kind: str, detail: str = "") -> None:
+        pass
+
+    def finish(self) -> EpisodeRecording:
+        return EpisodeRecording(
+            episode_id=self._episode_id,
+            fps=10.0,
+            frame_count=0,
+            metadata_path="/stub/metadata.json",
+        )
+
+
+class _SpyCritic(FakeCritic):
+    """FakeCritic that records every evaluate_episode call's arguments."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.seen: list[dict[str, Any]] = []
+
+    def evaluate_episode(
+        self,
+        recording: Any,
+        *,
+        final_success: bool,
+        max_steps: int | None = None,
+        stage_logs: Any = "",
+    ) -> CriticResult:
+        self.seen.append(
+            {"recording": recording, "final_success": final_success}
+        )
+        return super().evaluate_episode(
+            recording,
+            final_success=final_success,
+            max_steps=max_steps,
+            stage_logs=stage_logs,
+        )
+
+
+def test_failed_recording_keeps_episode_critic_alignment(tmp_path: Path) -> None:
+    # The recorder factory explodes on the FIRST train episode only; without
+    # index-aligned recordings the critic would pair episode 0's outcome
+    # with episode 1's recording.
+    calls = {"n": 0}
+
+    def factory() -> Any:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("recorder exploded")
+        return _StubRecorder()
+
+    env = _SuccessOnTasksEnv(("train-1",))
+    critic = _SpyCritic()
+    runner, _, _, _ = make_runner(
+        tmp_path,
+        env=env,
+        critic=critic,
+        train_tasks=[make_task("train-0"), make_task("train-1")],
+        recorder_factory=factory,
+    )
+    log = runner.run(1)
+
+    # Critic saw only the second episode, with ITS recording and outcome.
+    assert len(critic.seen) == 1
+    seen = critic.seen[0]
+    assert seen["recording"].episode_id.startswith("rollout-train-1-")
+    assert seen["final_success"] is True
+    # The failed recording leaves no path in the epoch log.
+    epoch = log.epochs[0]
+    assert epoch.train_episodes == 2
+    assert epoch.recordings == ["/stub/metadata.json"]
 
 
 # --------------------------------------------------------------------- #

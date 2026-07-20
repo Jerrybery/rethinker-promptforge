@@ -348,7 +348,9 @@ class ForgeRunner:
             validation_reason=validation_reason,
             best_version_id=new_best.version_id,
             recordings=[
-                r.video_path or r.metadata_path for r in recordings
+                r.video_path or r.metadata_path
+                for r in recordings
+                if r is not None
             ],
             snapshot_path=str(snapshot) if snapshot else None,
             timestamp=_utc_now(),
@@ -399,9 +401,12 @@ class ForgeRunner:
 
     def _train_rollouts(
         self, epoch_idx: int
-    ) -> tuple[list[Episode], list[EpisodeRecording], int]:
+    ) -> tuple[list[Episode], list[EpisodeRecording | None], int]:
         episodes: list[Episode] = []
-        recordings: list[EpisodeRecording] = []
+        # Index-aligned with `episodes`: a failed recording stays a None
+        # slot so the critic loop never pairs an episode with the wrong
+        # recording.
+        recordings: list[EpisodeRecording | None] = []
         failed = 0
         for task in self._train_tasks:
             try:
@@ -418,6 +423,7 @@ class ForgeRunner:
             try:
                 recordings.append(self._record_episode(episode, epoch_idx))
             except Exception as exc:
+                recordings.append(None)
                 logger.exception(
                     "Recording failed (episode={}): {}; continuing",
                     episode.id,
@@ -428,12 +434,18 @@ class ForgeRunner:
     def _critic_evaluations(
         self,
         episodes: list[Episode],
-        recordings: list[EpisodeRecording],
+        recordings: list[EpisodeRecording | None],
     ) -> list[StageEvaluation]:
         if self._critic is None:
             return []
         evaluations: list[StageEvaluation] = []
         for episode, recording in zip(episodes, recordings):
+            if recording is None:
+                logger.debug(
+                    "Skipping critic for episode {}: recording failed",
+                    episode.id,
+                )
+                continue
             try:
                 result = self._critic.evaluate_episode(
                     recording,
