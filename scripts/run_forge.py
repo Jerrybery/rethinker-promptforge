@@ -134,8 +134,9 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         default=DEFAULT_TASKS_PATH,
         help=(
             "Task catalogue YAML (default: data/tasks/hello_tasks.yaml). "
-            "Without --val-tasks the last third (min 1) is held out for "
-            "validation."
+            "If tasks declare metadata.split (e.g. configs/forge_tasks.yaml), "
+            "the catalogue is split by it; otherwise, without --val-tasks, "
+            "the last third (min 1) is held out for validation."
         ),
     )
     parser.add_argument(
@@ -224,6 +225,8 @@ def _split_tasks(
             logger.error("Train/validation catalogues must both be non-empty")
             return None
         return tasks, val_tasks
+    if any((t.metadata or {}).get("split") for t in tasks):
+        return _split_by_metadata(tasks)
     if len(tasks) < 2:
         logger.error(
             "Need at least 2 tasks in {} to hold out a validation set "
@@ -233,6 +236,33 @@ def _split_tasks(
         return None
     val_count = max(1, len(tasks) // 3)
     return tasks[:-val_count], tasks[-val_count:]
+
+
+def _split_by_metadata(
+    tasks: list[TaskDefinition],
+) -> tuple[list[TaskDefinition], list[TaskDefinition]] | None:
+    """Split tasks by ``metadata.split`` (train/val); None + error if invalid.
+
+    Catalogues like ``configs/forge_tasks.yaml`` declare the intended split
+    per task (val = UNSEEN occlusion patterns); honor it instead of the
+    positional last-third holdout.
+    """
+    train = [t for t in tasks if (t.metadata or {}).get("split") == "train"]
+    val = [t for t in tasks if (t.metadata or {}).get("split") == "val"]
+    if not train or not val:
+        logger.error(
+            "metadata.split declared but train/val are not both non-empty "
+            "(train={}, val={})",
+            len(train),
+            len(val),
+        )
+        return None
+    logger.info(
+        "Splitting tasks by metadata.split: train={} val={}",
+        [t.id for t in train],
+        [t.id for t in val],
+    )
+    return train, val
 
 
 def _initial_prompt_text(args: argparse.Namespace) -> str:

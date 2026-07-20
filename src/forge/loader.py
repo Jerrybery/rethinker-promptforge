@@ -9,6 +9,10 @@ Occlusion variants are *mapped* onto existing RoboTwin tasks via
 ``metadata.robottwin_task_name`` / ``metadata.robottwin_task_config``;
 spawning novel occluder objects inside RoboTwin is intentionally out of
 scope here.
+
+Catalogues may also declare a train/val split per task via
+``metadata.split`` (e.g. ``configs/forge_tasks.yaml``, where val holds
+UNSEEN occlusion patterns); pass ``split=`` to filter on load.
 """
 
 from __future__ import annotations
@@ -39,13 +43,22 @@ def _validate_occlusion_metadata(task: TaskDefinition, source: str) -> None:
         )
 
 
-def load_forge_tasks(path: str | Path) -> list[TaskDefinition]:
+def load_forge_tasks(
+    path: str | Path, *, split: str | None = None
+) -> list[TaskDefinition]:
     """Load a task catalogue, validating forge occlusion metadata.
 
     Accepts the same YAML shape as :func:`tasks.loader.load_task_definitions`.
     Entries may add ``metadata.occlusion_sources`` (list of strings) to
     describe occlusion variants; any other ``metadata`` fields pass through
     unchanged.
+
+    Args:
+        path: Path to the YAML catalogue.
+        split: Optional ``metadata.split`` filter (e.g. ``"train"`` /
+            ``"val"``). When given, only tasks whose ``metadata.split``
+            equals ``split`` are returned; tasks without a declared split
+            are excluded.
 
     Raises:
         ValueError: If occlusion metadata is malformed (or the underlying
@@ -54,6 +67,10 @@ def load_forge_tasks(path: str | Path) -> list[TaskDefinition]:
     tasks = load_task_definitions(path)
     for task in tasks:
         _validate_occlusion_metadata(task, str(path))
+    if split is not None:
+        tasks = [
+            task for task in tasks if (task.metadata or {}).get("split") == split
+        ]
     return tasks
 
 

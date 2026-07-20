@@ -107,3 +107,73 @@ PYTHONPATH=src python scripts/run_rethinker.py \
 (`hello-place-a2b-right`, `hello-pick-only`) used to validate the closed-loop
 wiring against RoboTwin with stub agents. They are not part of the real
 evaluation suite.
+
+## Forge occlusion task suite
+
+`configs/forge_tasks.yaml` (Milestone 3, Task 3.9) is the task set the forge
+experiments run against: 8 pick-place-style RoboTwin tasks with occlusion
+variants, split 5 train / 3 val where **val contains UNSEEN occlusion
+patterns** — the split is by occlusion *pattern*, not just by seed. All
+variants are expressed through existing RoboTwin knobs
+(`domain_randomization` flags + seed ranges); RoboTwin itself is unmodified.
+
+### Occlusion pattern taxonomy
+
+Three randomization axes, combined into pattern ids
+(`metadata.occlusion_pattern`, mirrored in `metadata.occlusion_axes`):
+
+| Axis | RoboTwin knob | Effect |
+| --- | --- | --- |
+| `clutter` | `domain_randomization.cluttered_table` | distractor objects on the table partially occlude the target from the head camera |
+| `lighting` | `domain_randomization.random_light` + `crazy_random_light_rate` | illumination-driven obscuration (shadows, glare, low visibility) |
+| `camera` | `domain_randomization.random_head_camera_dis > 0` | head-camera viewpoint randomization; changes the occlusion geometry per episode |
+
+- **Train pattern set A** (camera axis never varied):
+  `occ-distractor-staticcam-fixedlight`,
+  `occ-distractor-staticcam-randomlight`.
+- **Validation pattern set B** (camera axis always varied — unseen in train):
+  `occ-distractor-randomcam-fixedlight`,
+  `occ-distractor-randomcam-randomlight`,
+  `occ-nodistractor-randomcam-randomlight` (clutter off: pure viewpoint +
+  lighting occlusion).
+
+Split rationale: the forge loop optimizes the planner prompt against train
+and accepts candidates only on strict val improvement, so val must measure
+*generalization to unseen occlusion*, not memorized pattern fixes. Train and
+val pattern ids are disjoint, and seed ranges are held out (train 100–599,
+val 900–989). `random_background`, `clean_background_rate`, and
+`random_table_height` stay fixed across the suite (future extension axes).
+
+### Tasks
+
+| id | RoboTwin task | split | occlusion_pattern | seed range |
+| --- | --- | --- | --- | --- |
+| forge-train-a2b-right-distractor | place_a2b_right | train | occ-distractor-staticcam-fixedlight | 100–199 |
+| forge-train-a2b-left-distractor | place_a2b_left | train | occ-distractor-staticcam-fixedlight | 200–299 |
+| forge-train-can-pot-distractor | move_can_pot | train | occ-distractor-staticcam-fixedlight | 300–399 |
+| forge-train-bread-skillet-distractor-randomlight | place_bread_skillet | train | occ-distractor-staticcam-randomlight | 400–499 |
+| forge-train-container-plate-distractor-randomlight | place_container_plate | train | occ-distractor-staticcam-randomlight | 500–599 |
+| forge-val-object-basket-randomcam | place_object_basket | val | occ-distractor-randomcam-fixedlight | 900–929 |
+| forge-val-can-basket-randomcam-randomlight | place_can_basket | val | occ-distractor-randomcam-randomlight | 930–959 |
+| forge-val-empty-cup-noclutter-randomcam-randomlight | place_empty_cup | val | occ-nodistractor-randomcam-randomlight | 960–989 |
+
+Each task carries `metadata.split` (`train`/`val`), `metadata.forge_role`
+(`prompt_training`/`prompt_validation`), `metadata.occlusion_pattern`,
+`metadata.occlusion_axes`, `metadata.occlusion_sources` (human-readable),
+`metadata.seed_range` (`[lo, hi]`; `initial_scene.seed` is the per-task base
+seed inside it), and `metadata.max_rounds` (8).
+
+### Running the suite
+
+```bash
+# Single catalogue: run_forge auto-splits by metadata.split (train/val)
+PYTHONPATH=src python scripts/run_forge.py --tasks configs/forge_tasks.yaml --epochs 3
+
+# Programmatic split filtering
+from forge.loader import load_forge_tasks
+train = load_forge_tasks("configs/forge_tasks.yaml", split="train")
+val = load_forge_tasks("configs/forge_tasks.yaml", split="val")
+```
+
+Explicit `--tasks/--val-tasks` file pairs keep their previous behavior (files
+used as-is), as do catalogues without `metadata.split` (last-third holdout).
