@@ -16,6 +16,12 @@ from forge.memory import ForgePlannerMemory
 from forge.optimizer import OptimizerLLM, PromptEdit, apply_edits
 from forge.planner_agent import ForgePlannerAgent, obs_to_rethinker_output
 from forge.recorder import EpisodeRecorder, EpisodeRecording, KeyframeEvent
+from forge.validator import (
+    PromptValidator,
+    TaskValidationMetrics,
+    ValidationResult,
+    rollout_episode,
+)
 
 __all__ = [
     "CriticResult",
@@ -26,6 +32,9 @@ __all__ = [
     "PromptEdit",
     "ForgePlannerMemory",
     "KeyframeEvent",
+    "PromptValidator",
+    "TaskValidationMetrics",
+    "ValidationResult",
     "SimAction",
     "SimEnv",
     "StageEvaluation",
@@ -36,5 +45,6 @@ __all__ = [
     "obs_to_rethinker_output",
     "occlusion_sources",
     "planner_output_to_sim_action",
+    "rollout_episode",
     "should_escalate",
 ]

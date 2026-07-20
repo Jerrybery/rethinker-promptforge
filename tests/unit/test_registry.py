@@ -273,3 +273,20 @@ def test_materialize_best_raises_without_best(
 def test_text_unknown_version_raises(registry: ForgePromptRegistry) -> None:
     with pytest.raises(KeyError, match="v000"):
         registry.text("v000")
+
+
+# --------------------------------------------------------------------- #
+# get
+# --------------------------------------------------------------------- #
+
+
+def test_get_returns_version_record(registry: ForgePromptRegistry) -> None:
+    version = registry.register("some prompt", "planner", _edit(), timestamp=TS0)
+
+    fetched = registry.get(version.version_id)
+    assert fetched == version
+
+
+def test_get_unknown_version_raises(registry: ForgePromptRegistry) -> None:
+    with pytest.raises(KeyError, match="v999"):
+        registry.get("v999")

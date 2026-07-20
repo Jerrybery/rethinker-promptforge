@@ -282,6 +282,14 @@ class ForgePromptRegistry:
             )
         return version
 
+    def get(self, version_id: str) -> PromptVersion:
+        """Return the version record for ``version_id``.
+
+        Raises:
+            KeyError: if ``version_id`` is unknown.
+        """
+        return self._get(version_id)
+
     def history(
         self, target_agent: str, status: VersionStatus | None = None
     ) -> list[PromptVersion]:
