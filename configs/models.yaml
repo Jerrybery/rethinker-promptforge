@@ -1,7 +1,7 @@
 # Model endpoint and runtime configuration.
 
 vllm:
-  model_id: "openvla/openvla-7b"
+  model_id: "Qwen/Qwen3-VL-2B-Instruct"
   base_url: "http://localhost:8000/v1"
   api_key: null
   temperature: 0.0
@@ -33,8 +33,8 @@ cloud_critic:
   max_tokens: 256
 
 optimizer:
-  model_id: null
-  base_url: "http://localhost:8001/v1"
+  model_id: "Qwen/Qwen3-VL-2B-Instruct"
+  base_url: "http://localhost:8000/v1"
   api_key: null
   temperature: 0.0
   max_tokens: 1024
