@@ -29,8 +29,10 @@ Artifacts under ``run_dir`` (conventionally ``results/forge/YYYYMMDD_HHMMSS/``):
     recordings/epoch_{NNN}/<id>/    per-episode video.mp4 + metadata.json
     registry/                       ForgePromptRegistry root (owned by the caller)
 
-Fault tolerance: a failing train episode, critic call, or validation
-rollout never kills the run — train/critic failures are logged and skipped;
+Fault tolerance: a failing train episode, critic call, optimizer proposal,
+validator call, or validation rollout never kills the run — train/critic
+failures are logged and skipped; an optimizer failure ends the epoch with
+no candidate; a validator failure leaves the candidate unvalidated;
 validation rollout failures are converted into zero-step failed episodes so
 the accept/reject math still completes.
 """
@@ -280,12 +282,25 @@ class ForgeRunner:
 
         rejected = self._registry.history(self._target_agent, status="rejected")
         rejected_texts = [self._registry.text(v.version_id) for v in rejected]
-        edits: list[PromptEdit] = self._optimizer.propose_edits(
-            best_text,
-            evaluations,
-            rejected_history=rejected,
-            rejected_texts=rejected_texts,
-        )
+        optimizer_error: Exception | None = None
+        try:
+            edits: list[PromptEdit] = self._optimizer.propose_edits(
+                best_text,
+                evaluations,
+                rejected_history=rejected,
+                rejected_texts=rejected_texts,
+            )
+        except Exception as exc:
+            # LLM outage etc.: end the epoch with no candidate; the run
+            # continues with the incumbent best next epoch.
+            optimizer_error = exc
+            edits = []
+            logger.exception(
+                "Epoch {}: optimizer.propose_edits failed: {}; epoch ends "
+                "without a candidate",
+                epoch_idx,
+                exc,
+            )
         edit_summary = _summarize_edits(edits)
 
         candidate_id: str | None = None
@@ -294,7 +309,9 @@ class ForgeRunner:
         val_average_steps: float | None = None
         validation_reason: str
 
-        if not edits:
+        if optimizer_error is not None:
+            validation_reason = f"optimizer.propose_edits failed: {optimizer_error}"
+        elif not edits:
             validation_reason = "optimizer proposed no edits; epoch skipped"
             logger.info("Epoch {}: {}", epoch_idx, validation_reason)
         else:
@@ -316,15 +333,27 @@ class ForgeRunner:
                     parent_version=best.version_id,
                 )
                 candidate_id = candidate.version_id
-                result = self._validator.validate(
-                    candidate,
-                    list(self._val_tasks),
-                    rollout_fn=self._rollout_for_version,
-                )
-                accepted = result.accepted
-                val_success_rate = result.success_rate
-                val_average_steps = result.average_steps
-                validation_reason = result.reason
+                try:
+                    result = self._validator.validate(
+                        candidate,
+                        list(self._val_tasks),
+                        rollout_fn=self._rollout_for_version,
+                    )
+                except Exception as exc:
+                    # Candidate stays registered but unvalidated; the run
+                    # continues with the incumbent best next epoch.
+                    logger.exception(
+                        "Epoch {}: validator.validate failed (candidate={}): {}",
+                        epoch_idx,
+                        candidate_id,
+                        exc,
+                    )
+                    validation_reason = f"validator.validate failed: {exc}"
+                else:
+                    accepted = result.accepted
+                    val_success_rate = result.success_rate
+                    val_average_steps = result.average_steps
+                    validation_reason = result.reason
 
         new_best = self._registry.best(self._target_agent)
         # Restore the planner to the reigning best for the next epoch.

@@ -26,6 +26,7 @@ from forge.optimizer import PromptEdit, apply_edits
 from forge.recorder import EpisodeRecorder, EpisodeRecording
 from forge.registry import ForgePromptRegistry
 from forge.runner import EpochLog, ForgeLog, ForgeRunner
+from forge.validator import PromptValidator
 from tasks.schema import TaskDefinition
 
 SEED_PROMPT = "# Seed Planner Prompt\n\n## Rules\n\n- Be helpful.\n"
@@ -185,9 +186,11 @@ class FakeOptimizer:
         self,
         edits: list[PromptEdit],
         on_call: Callable[[], None] | None = None,
+        fail: bool = False,
     ) -> None:
         self._edits = edits
         self._on_call = on_call
+        self._fail = fail
         self.calls: list[dict[str, Any]] = []
 
     def propose_edits(
@@ -208,6 +211,8 @@ class FakeOptimizer:
                 ),
             }
         )
+        if self._fail:
+            raise RuntimeError("optimizer exploded")
         if self._on_call is not None:
             self._on_call()
         return list(self._edits)
@@ -487,6 +492,74 @@ def test_critic_exception_tolerated(tmp_path: Path) -> None:
 
     assert log.epochs[0].critic_evaluations == 0
     assert optimizer.calls[0]["evaluations"] == []
+
+
+def test_optimizer_exception_does_not_kill_run(tmp_path: Path) -> None:
+    runner, registry, _, optimizer = make_runner(
+        tmp_path, optimizer=FakeOptimizer([EDIT], fail=True)
+    )
+    log = runner.run(2)
+
+    assert len(log.epochs) == 2
+    assert len(optimizer.calls) == 2  # every epoch still calls the optimizer
+    for epoch in log.epochs:
+        assert epoch.edits_proposed == 0
+        assert epoch.candidate_version_id is None
+        assert epoch.accepted is None
+        assert "propose_edits" in epoch.validation_reason
+    # Only the seed exists in the registry; best stays the seed.
+    assert len(registry.history("planner")) == 1
+    assert log.final_best_version_id == log.seed_version_id
+
+
+class _FlakyValidator:
+    """Delegates to a real PromptValidator but raises when ``fail`` is set."""
+
+    def __init__(self, delegate: PromptValidator) -> None:
+        self._delegate = delegate
+        self.fail = False
+
+    def validate(self, *args: Any, **kwargs: Any) -> Any:
+        if self.fail:
+            raise RuntimeError("validator exploded")
+        return self._delegate.validate(*args, **kwargs)
+
+
+def test_validator_exception_does_not_kill_run(tmp_path: Path) -> None:
+    registry = ForgePromptRegistry(tmp_path / "registry")
+    env = FakeEnv()
+    planner = FakePlanner()
+    delegate = PromptValidator(registry, env=env, planner=planner, max_rounds=10)
+    validator = _FlakyValidator(delegate)
+    runner = ForgeRunner(
+        registry=registry,
+        env=env,
+        planner=planner,
+        optimizer=FakeOptimizer([EDIT]),
+        validator=validator,
+        train_tasks=[TRAIN_TASK],
+        val_tasks=[VAL_TASK],
+        run_dir=tmp_path / "run",
+        initial_prompt_text=SEED_PROMPT,
+    )
+
+    first = runner.run(1)  # seeding + epoch validate normally
+    assert first.epochs[0].accepted is False
+
+    validator.fail = True
+    second = runner.run(1)  # mid-run validator outage: run must survive
+
+    assert len(second.epochs) == 1
+    epoch = second.epochs[0]
+    assert epoch.candidate_version_id is not None
+    assert epoch.accepted is None
+    assert "validate" in epoch.validation_reason
+    assert "validator exploded" in epoch.validation_reason
+    # Candidate stays registered but unvalidated (no outcome recorded).
+    candidate = registry.get(epoch.candidate_version_id)
+    assert candidate.validation is None
+    assert candidate.status == "candidate"
+    assert second.final_best_version_id == second.seed_version_id
 
 
 def test_no_critic_means_no_evaluations(tmp_path: Path) -> None:
