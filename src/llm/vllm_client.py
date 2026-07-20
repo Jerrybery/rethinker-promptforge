@@ -16,9 +16,11 @@ from rethinker_promptforge.config import load_config
 
 
 class VLLMClient:
-    """Thin client for a local vLLM OpenAI-compatible chat endpoint.
+    """Thin client for an OpenAI-compatible chat endpoint with image support.
 
-    Configuration is read from ``configs/models.yaml`` under the ``vllm`` key.
+    Configuration is read from ``configs/models.yaml`` under the
+    ``config_section`` key (``"vllm"`` for the local endpoint; subclasses
+    such as the cloud critic client point it at other sections).
     """
 
     def __init__(
@@ -27,14 +29,19 @@ class VLLMClient:
         max_retries: int = 3,
         base_delay: float = 1.0,
         max_delay: float = 8.0,
+        config_section: str = "vllm",
     ) -> None:
         if config_path is None:
             repo_root = Path(__file__).resolve().parents[2]
             config_path = repo_root / "configs" / "models.yaml"
-        cfg = load_config(config_path).get("vllm", {})
+        cfg = load_config(config_path).get(config_section, {})
+        self.config_section = config_section
         self.base_url = str(cfg.get("base_url", "http://localhost:8000/v1")).rstrip("/")
         self.api_key = cfg.get("api_key") or "EMPTY"
-        self.model_id = cfg.get("model_id", "openvla/openvla-7b")
+        if "model_id" in cfg:
+            self.model_id = cfg["model_id"]
+        else:
+            self.model_id = "openvla/openvla-7b" if config_section == "vllm" else None
         self.temperature = cfg.get("temperature", 0.0)
         self.top_p = cfg.get("top_p", 1.0)
         self.max_tokens = cfg.get("max_tokens", 512)
@@ -42,8 +49,9 @@ class VLLMClient:
         self.base_delay = base_delay
         self.max_delay = max_delay
         logger.info(
-            "VLLMClient initialized: model_id={}, base_url={}, "
+            "VLLMClient initialized: section={}, model_id={}, base_url={}, "
             "temperature={}, top_p={}, max_tokens={}",
+            self.config_section,
             self.model_id,
             self.base_url,
             self.temperature,
