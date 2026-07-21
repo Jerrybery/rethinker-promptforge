@@ -26,8 +26,8 @@ anygrasp:
   max_grasp_width: 0.12
 
 cloud_critic:
-  model_id: null
-  base_url: "http://localhost:8001/v1"
+  model_id: "Qwen/Qwen3-VL-2B-Instruct"
+  base_url: "http://localhost:8000/v1"
   api_key: null
   temperature: 0.0
   max_tokens: 256
