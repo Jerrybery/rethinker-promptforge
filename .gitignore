@@ -50,3 +50,4 @@ venv.bak/
 Thumbs.db
 logs/
 results/
+*.local.yaml
