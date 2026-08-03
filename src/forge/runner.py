@@ -336,7 +336,7 @@ class ForgeRunner:
                 try:
                     result = self._validator.validate(
                         candidate,
-                        list(self._val_tasks),
+                        list(self._val_tasks) * 4,  # 4 episodes per val task: keep gate decisions above single-episode noise
                         rollout_fn=self._rollout_for_version,
                     )
                 except Exception as exc:
@@ -416,7 +416,7 @@ class ForgeRunner:
         )
         result = self._validator.validate(
             seed,
-            list(self._val_tasks),
+            list(self._val_tasks) * 4,  # 4 episodes per val task: keep gate decisions above single-episode noise
             rollout_fn=self._rollout_for_version,
         )
         logger.info(

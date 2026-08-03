@@ -411,6 +411,68 @@ def test_validate_rejects_on_tiebreak_more_steps(
     assert registry.get(cand.version_id).status == "rejected"
 
 
+def test_average_steps_excludes_failed_episodes(
+    registry: ForgePromptRegistry,
+) -> None:
+    """Failed episodes (incl. zero-step error rollouts) must not lower the
+    step metric — otherwise a candidate wins the tie-break by failing fast.
+    """
+    best = _seed_best(registry)  # success_rate 0.5, average_steps 4.0
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    rollout.set(cand.version_id, "t1", success=True, steps=2)
+    rollout.set(cand.version_id, "t2", success=False, steps=0)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.success_rate == 0.5
+    assert result.average_steps == 2.0  # not (2 + 0) / 2
+    assert result.accepted is True  # genuine improvement: 2.0 < 4.0
+
+
+def test_average_steps_is_max_rounds_when_no_success(
+    registry: ForgePromptRegistry,
+) -> None:
+    """A fully-failed candidate gets the worst-case step metric."""
+    best = _seed_best(registry)  # success_rate 0.5, average_steps 4.0
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    rollout.set(cand.version_id, "t1", success=False, steps=0)
+    rollout.set(cand.version_id, "t2", success=False, steps=1)
+
+    result = PromptValidator(registry, max_rounds=8).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.success_rate == 0.0
+    assert result.average_steps == 8.0
+    assert result.accepted is False
+
+
+def test_baseline_reevaluation_also_excludes_failed_episodes(
+    registry: ForgePromptRegistry,
+) -> None:
+    best = _seed_best(registry, metrics={})  # force re-evaluation
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    rollout.set(best.version_id, "t1", success=True, steps=3)
+    rollout.set(best.version_id, "t2", success=False, steps=0)
+    rollout.set(cand.version_id, "t1", success=True, steps=3)
+    rollout.set(cand.version_id, "t2", success=True, steps=3)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.baseline_composite == 0.5
+    assert result.baseline_average_steps == 3.0  # not (3 + 0) / 2
+
+
 def test_validate_reevaluates_best_when_metrics_missing(
     registry: ForgePromptRegistry,
 ) -> None:

@@ -12,7 +12,10 @@ The composite is the lexicographic key ``(success_rate, -average_steps)``
 over the held-out task set:
 
 - primary: task success rate (higher is better);
-- tie-break: average steps per episode (fewer is better).
+- tie-break: average steps per SUCCESSFUL episode (fewer is better;
+  episodes that failed — including zero-step error rollouts — are excluded
+  so a candidate cannot game the metric by failing fast, and a candidate
+  with no successes gets the worst-case ``max_rounds``).
 
 A candidate is accepted iff its key is STRICTLY greater than the incumbent
 best's key, i.e. ``success_rate`` is strictly higher, or equal with strictly
@@ -299,8 +302,7 @@ class PromptValidator:
             self._evaluate_task(version.version_id, task, rollout, active_critic)
             for task in val_tasks
         ]
-        success_rate = sum(m.success for m in per_task) / len(per_task)
-        average_steps = sum(m.steps for m in per_task) / len(per_task)
+        success_rate, average_steps = self._aggregate(per_task)
         video_scores = [m.video_score for m in per_task if m.video_score is not None]
         mean_video_score = (
             sum(video_scores) / len(video_scores) if video_scores else None
@@ -415,9 +417,27 @@ class PromptValidator:
             self._evaluate_task(best.version_id, task, rollout, None)
             for task in val_tasks
         ]
-        success_rate = sum(m.success for m in per_task) / len(per_task)
-        average_steps = sum(m.steps for m in per_task) / len(per_task)
+        success_rate, average_steps = self._aggregate(per_task)
         return (success_rate, average_steps, True)
+
+    def _aggregate(
+        self, per_task: list[TaskValidationMetrics]
+    ) -> tuple[float, float]:
+        """Return ``(success_rate, average_steps)`` for one rollout set.
+
+        ``average_steps`` is computed over SUCCESSFUL episodes only: a
+        failed episode's step count (including zero-step error rollouts)
+        must not drag the tie-break metric down — otherwise a candidate can
+        "improve" by failing faster. When no episode succeeded, the metric
+        is the worst-case value ``max_rounds`` so a 0-success candidate
+        cannot win the step tie-break either.
+        """
+        success_rate = sum(m.success for m in per_task) / len(per_task)
+        successes = [m for m in per_task if m.success]
+        if not successes:
+            return success_rate, float(self._max_rounds)
+        average_steps = sum(m.steps for m in successes) / len(successes)
+        return success_rate, average_steps
 
     @staticmethod
     def _decide(
