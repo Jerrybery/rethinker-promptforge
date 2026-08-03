@@ -45,3 +45,16 @@ Field definitions:
 - `MOVE_ASIDE`: displace `pick` to clear space.
 - `REOBSERVE`: the scene is unclear; plan a re-observation action.
 - `STOP`: the task is complete or cannot proceed safely.
+
+## Single-arm strategy
+
+The robot has exactly ONE arm, so complex goals are achieved as a sequence of
+single-arm sub-missions across steps, never in parallel. Examples:
+
+- "Object in basket and basket lifted": first `PICK_AND_PLACE` the object
+  into the basket, then `PICK_ONLY` the basket itself to lift it with the
+  same arm.
+- Target occluded by clutter: `MOVE_ASIDE` the occluding object first, then
+  manipulate the target.
+- After a failed grasp/place, prefer `REOBSERVE` or an alternate target
+  order over blindly repeating the identical action.

@@ -72,6 +72,7 @@ from pydantic import BaseModel, ConfigDict, model_validator
 from common.schema import MissionType
 from executor.primitives import PrimitiveLibrary, PrimitiveResult
 from perception.dino_client import DINOClient
+from perception.oracle_detector import OracleDetector
 from robot.interface import RoboTwinBackend, RobotInterface
 from robot.robottwin_env import make_robottwin_env
 from robot.state import RobotState
@@ -122,7 +123,10 @@ class SimEnv:
             testing; defaults to the real factory.
         dino: Object exposing ``detect(image) -> list[DetectedObject]``.
             Defaults to a mock-mode :class:`DINOClient` (deterministic fake
-            detections) since grasp/place pose resolution is stubbed anyway.
+            detections). Per episode, when the task metadata carries an
+            ``object_actors`` mapping (semantic label -> env actor
+            attribute), an :class:`OracleDetector` over the mapping's labels
+            replaces it and the primitives execute real actor-level motions.
         repo_root: Optional repository root forwarded to the env factory.
     """
 
@@ -139,6 +143,7 @@ class SimEnv:
         self._env: Any | None = None
         self._robot: RobotInterface | None = None
         self._primitives: PrimitiveLibrary | None = None
+        self._active_dino: Any | None = None
         self._task: TaskDefinition | None = None
         self._frames: list[np.ndarray] = []
         self._step_index = 0
@@ -216,9 +221,53 @@ class SimEnv:
         backend = RoboTwinBackend(env=env, strict_stop=False)
         robot = RobotInterface(backend=backend)
 
+        object_actors = metadata.get("object_actors")
+        if object_actors:
+            visibility_provider = None
+            if metadata.get("visibility_filter", True):
+                try:
+                    from perception.visibility import RaycastVisibilityProvider
+
+                    visibility_provider = RaycastVisibilityProvider(
+                        env,
+                        object_actors,
+                        hidden_by=metadata.get("hidden_by"),
+                        cover_radius=float(metadata.get("cover_radius", 0.15)),
+                    )
+                except Exception as exc:
+                    # Fail open: without a working provider the detector
+                    # stays all-knowing rather than breaking the episode.
+                    logger.warning(
+                        "SimEnv.reset: visibility provider unavailable ({}); "
+                        "detections stay all-knowing",
+                        exc,
+                    )
+            detector = OracleDetector(
+                labels_provider=lambda: list(object_actors.keys()),
+                visibility_provider=visibility_provider,
+                # Declared cover relations (hidden_by) encode the scene's
+                # intended occlusion: hide immediately instead of waiting
+                # for the anti-flicker hysteresis window.
+                hide_after=2,
+            )
+            primitives = PrimitiveLibrary(
+                robot=robot,
+                dino=detector,
+                object_actors=dict(object_actors),
+                place_offsets=metadata.get("place_offsets"),
+                grasp_contact_point_id=bool(
+                    metadata.get("grasp_contact_point_id", False)
+                ),
+            )
+            active_dino: Any = detector
+        else:
+            primitives = PrimitiveLibrary(robot=robot, dino=self._dino)
+            active_dino = self._dino
+
         self._env = env
         self._robot = robot
-        self._primitives = PrimitiveLibrary(robot=robot, dino=self._dino)
+        self._primitives = primitives
+        self._active_dino = active_dino
         self._task = task
         self._frames = []
         self._step_index = 0
@@ -295,6 +344,7 @@ class SimEnv:
         self._env = None
         self._robot = None
         self._primitives = None
+        self._active_dino = None
         self._task = None
         self._frames = []
         self._step_index = 0
@@ -374,7 +424,7 @@ class SimEnv:
                 "bbox": list(det.bbox),
                 "confidence": det.confidence,
             }
-            for det in self._dino.detect(image)
+            for det in self._active_dino.detect(image)
         ]
 
         return {

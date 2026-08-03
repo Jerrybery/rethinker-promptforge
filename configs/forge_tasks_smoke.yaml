@@ -9,7 +9,7 @@ tasks:
   initial_scene:
     task_name: place_a2b_right
     embodiment:
-    - aloha-agilex
+    - franka-panda
     domain_randomization:
       random_background: false
       cluttered_table: true
@@ -45,6 +45,8 @@ tasks:
     max_rounds: 8
     allowed_actions:
     - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
     - REOBSERVE
     - STOP
     failure_criteria:
@@ -52,6 +54,14 @@ tasks:
     - max_rounds exceeded
     robottwin_task_name: place_a2b_right
     robottwin_task_config: demo_clean
+    object_actors:
+      source_object: object
+      target_object: target_object
+    place_offsets:
+      target_object:
+      - 0.13
+      - 0.0
+      - 0.0
 - id: forge-train-a2b-left-distractor
   instruction: Pick up the object on the left and place it next to the target object,
     despite the clutter on the table.
@@ -62,7 +72,7 @@ tasks:
   initial_scene:
     task_name: place_a2b_left
     embodiment:
-    - aloha-agilex
+    - franka-panda
     domain_randomization:
       random_background: false
       cluttered_table: true
@@ -71,7 +81,7 @@ tasks:
       random_table_height: 0
       random_light: false
       crazy_random_light_rate: 0
-    seed: 200
+    seed: 201
     render_freq: 0
     save_data: false
     collect_data: false
@@ -93,11 +103,13 @@ tasks:
       objects from the head camera
     - gripper occludes the source object during the grasp
     seed_range:
-    - 200
+    - 201
     - 299
     max_rounds: 8
     allowed_actions:
     - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
     - REOBSERVE
     - STOP
     failure_criteria:
@@ -105,6 +117,14 @@ tasks:
     - max_rounds exceeded
     robottwin_task_name: place_a2b_left
     robottwin_task_config: demo_clean
+    object_actors:
+      source_object: object
+      target_object: target_object
+    place_offsets:
+      target_object:
+      - -0.13
+      - 0.0
+      - 0.0
 - id: forge-train-can-pot-distractor
   instruction: Pick up the can and move it into the pot, despite the clutter on the
     table.
@@ -115,7 +135,7 @@ tasks:
   initial_scene:
     task_name: move_can_pot
     embodiment:
-    - aloha-agilex
+    - franka-panda
     domain_randomization:
       random_background: false
       cluttered_table: true
@@ -124,7 +144,7 @@ tasks:
       random_table_height: 0
       random_light: false
       crazy_random_light_rate: 0
-    seed: 300
+    seed: 302
     render_freq: 0
     save_data: false
     collect_data: false
@@ -145,11 +165,13 @@ tasks:
     - distractor clutter objects partially occlude the can from the head camera
     - pot rim occludes the can from the head camera during the final approach
     seed_range:
-    - 300
+    - 302
     - 399
     max_rounds: 8
     allowed_actions:
     - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
     - REOBSERVE
     - STOP
     failure_criteria:
@@ -158,124 +180,99 @@ tasks:
     - max_rounds exceeded
     robottwin_task_name: move_can_pot
     robottwin_task_config: demo_clean
-- id: forge-val-object-basket-randomcam
-  instruction: Pick up the object and place it into the basket, despite the clutter
-    and varying camera viewpoint.
-  mission_type: PICK_AND_PLACE
-  objects:
-  - object
-  - basket
-  initial_scene:
-    task_name: place_object_basket
-    embodiment:
-    - aloha-agilex
-    domain_randomization:
-      random_background: false
-      cluttered_table: true
-      clean_background_rate: 0
-      random_head_camera_dis: 0.1
-      random_table_height: 0
-      random_light: false
-      crazy_random_light_rate: 0
-    seed: 900
-    render_freq: 0
-    save_data: false
-    collect_data: false
-  success_criteria:
-  - object is inside the basket
-  - basket remains upright at its original position
-  metadata:
-    split: val
-    forge_role: prompt_validation
-    category: forge_occlusion
-    difficulty: hard
-    occlusion_pattern: occ-distractor-randomcam-fixedlight
-    occlusion_axes:
-      clutter: true
-      lighting: fixed
-      camera: random
-    occlusion_sources:
-    - randomized head-camera viewpoint changes which clutter objects occlude the target
-      each episode
-    - distractor clutter objects partially occlude the object from the head camera
-    seed_range:
-    - 900
-    - 929
-    max_rounds: 8
-    allowed_actions:
-    - PICK_AND_PLACE
-    - REOBSERVE
-    - STOP
-    failure_criteria:
-    - object dropped outside the basket
-    - basket tipped over or displaced
-    - max_rounds exceeded
-    robottwin_task_name: place_object_basket
-    robottwin_task_config: demo_clean
-- id: forge-val-can-basket-randomcam-randomlight
-  instruction: Pick up the can and place it into the basket, despite the clutter,
-    changing lighting, and varying camera viewpoint.
+    object_actors:
+      can: can
+      pot: pot
+    place_offsets:
+      pot:
+        offset:
+        - 0.18
+        - 0.0
+        - 0.0
+        mirror_with_arm: true
+- id: forge-train-can-pot-occluded
+  instruction: Move the can next to the pot. The can is hidden behind another
+    object and is not visible; move the occluding object aside to find it first.
   mission_type: PICK_AND_PLACE
   objects:
   - can
-  - basket
+  - pot
+  - occluder
   initial_scene:
-    task_name: place_can_basket
+    task_name: move_can_pot_occluded
     embodiment:
-    - aloha-agilex
+    - franka-panda
     domain_randomization:
       random_background: false
-      cluttered_table: true
+      cluttered_table: false
       clean_background_rate: 0
-      random_head_camera_dis: 0.1
+      random_head_camera_dis: 0
       random_table_height: 0
-      random_light: true
-      crazy_random_light_rate: 0.1
-    seed: 930
+      random_light: false
+      crazy_random_light_rate: 0
+    seed: 301
     render_freq: 0
     save_data: false
     collect_data: false
   success_criteria:
-  - can is inside the basket
-  - basket remains upright at its original position
+  - can is placed next to the pot
+  - pot remains upright at its original position
   metadata:
-    split: val
-    forge_role: prompt_validation
+    split: train
+    forge_role: prompt_training
     category: forge_occlusion
     difficulty: hard
-    occlusion_pattern: occ-distractor-randomcam-randomlight
+    occlusion_pattern: occ-cover-hidden-target
     occlusion_axes:
-      clutter: true
-      lighting: random
-      camera: random
+      clutter: false
+      lighting: fixed
+      camera: static
     occlusion_sources:
-    - randomized head-camera viewpoint changes which clutter objects occlude the can
-      each episode
-    - randomized lighting casts shadows and glare that obscure the can and basket
+    - a cup is parked next to the target can and covers it; the can stays
+      hidden from the detection set until the occluder is moved aside
     seed_range:
-    - 930
-    - 959
+    - 301
+    - 330
     max_rounds: 8
     allowed_actions:
     - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
     - REOBSERVE
     - STOP
     failure_criteria:
-    - can dropped outside the basket
-    - basket tipped over or displaced
+    - can dropped outside the table workspace
+    - pot tipped over or pushed off its original position
     - max_rounds exceeded
-    robottwin_task_name: place_can_basket
+    robottwin_task_name: move_can_pot_occluded
     robottwin_task_config: demo_clean
+    object_actors:
+      can: can
+      pot: pot
+      occluder: occluder
+    hidden_by:
+      can:
+      - occluder
+    cover_radius: 0.25
+    grasp_contact_point_id: true
+    place_offsets:
+      pot:
+        offset:
+        - 0.18
+        - 0.0
+        - 0.0
+        mirror_with_arm: true
 - id: forge-val-empty-cup-noclutter-randomcam-randomlight
-  instruction: Pick up the empty cup and place it upright on the table, despite the
-    changing lighting and varying camera viewpoint.
+  instruction: Pick up the empty cup and place it upright on the coaster, despite
+    the changing lighting and varying camera viewpoint.
   mission_type: PICK_AND_PLACE
   objects:
   - cup
+  - coaster
   initial_scene:
     task_name: place_empty_cup
     embodiment:
-    - aloha-agilex
+    - franka-panda
     domain_randomization:
       random_background: false
       cluttered_table: false
@@ -289,7 +286,7 @@ tasks:
     save_data: false
     collect_data: false
   success_criteria:
-  - cup is placed upright on the table
+  - cup is placed upright on the coaster
   - gripper is open and clear of the cup at episode end
   metadata:
     split: val
@@ -312,6 +309,8 @@ tasks:
     max_rounds: 8
     allowed_actions:
     - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
     - REOBSERVE
     - STOP
     failure_criteria:
@@ -319,3 +318,204 @@ tasks:
     - max_rounds exceeded
     robottwin_task_name: place_empty_cup
     robottwin_task_config: demo_clean
+    object_actors:
+      cup: cup
+      coaster: coaster
+    grasp_contact_point_id: true
+- id: forge-val-container-plate-randomcam-randomlight
+  instruction: Pick up the container and place it on the plate, despite the
+    clutter, changing lighting, and varying camera viewpoint.
+  mission_type: PICK_AND_PLACE
+  objects:
+  - container
+  - plate
+  initial_scene:
+    task_name: place_container_plate
+    embodiment:
+    - franka-panda
+    domain_randomization:
+      random_background: false
+      cluttered_table: true
+      clean_background_rate: 0
+      random_head_camera_dis: 0.1
+      random_table_height: 0
+      random_light: true
+      crazy_random_light_rate: 0.1
+    seed: 901
+    render_freq: 0
+    save_data: false
+    collect_data: false
+  success_criteria:
+  - container is on the plate
+  - gripper is open and clear of the container at episode end
+  metadata:
+    split: val
+    forge_role: prompt_validation
+    category: forge_occlusion
+    difficulty: hard
+    occlusion_pattern: occ-distractor-randomcam-randomlight
+    occlusion_axes:
+      clutter: true
+      lighting: random
+      camera: random
+    occlusion_sources:
+    - randomized head-camera viewpoint changes which clutter objects occlude
+      the container each episode
+    - randomized lighting casts shadows and glare that obscure the container
+      and plate
+    seed_range:
+    - 901
+    - 929
+    max_rounds: 8
+    allowed_actions:
+    - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
+    - REOBSERVE
+    - STOP
+    failure_criteria:
+    - container dropped outside the plate
+    - plate tipped over or displaced
+    - max_rounds exceeded
+    robottwin_task_name: place_container_plate
+    robottwin_task_config: demo_clean
+    object_actors:
+      container: container
+      plate: plate
+    grasp_contact_point_id: true
+- id: forge-val-object-stand-randomcam-randomlight
+  instruction: Pick up the object and place it on the display stand, despite
+    the clutter, changing lighting, and varying camera viewpoint.
+  mission_type: PICK_AND_PLACE
+  objects:
+  - object
+  - displaystand
+  initial_scene:
+    task_name: place_object_stand
+    embodiment:
+    - franka-panda
+    domain_randomization:
+      random_background: false
+      cluttered_table: true
+      clean_background_rate: 0
+      random_head_camera_dis: 0.1
+      random_table_height: 0
+      random_light: true
+      crazy_random_light_rate: 0.1
+    seed: 922
+    render_freq: 0
+    save_data: false
+    collect_data: false
+  success_criteria:
+  - object is on the display stand
+  - gripper is open and clear of the object at episode end
+  metadata:
+    split: val
+    forge_role: prompt_validation
+    category: forge_occlusion
+    difficulty: hard
+    occlusion_pattern: occ-distractor-randomcam-randomlight
+    occlusion_axes:
+      clutter: true
+      lighting: random
+      camera: random
+    occlusion_sources:
+    - randomized head-camera viewpoint changes which clutter objects occlude
+      the object each episode
+    - randomized lighting casts shadows and glare that obscure the object and
+      stand
+    - small stand surface demands precise placement
+    seed_range:
+    - 920
+    - 949
+    max_rounds: 8
+    allowed_actions:
+    - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
+    - REOBSERVE
+    - STOP
+    failure_criteria:
+    - object dropped outside the display stand
+    - display stand tipped over or displaced
+    - max_rounds exceeded
+    robottwin_task_name: place_object_stand
+    robottwin_task_config: demo_clean
+    object_actors:
+      object: object
+      displaystand: displaystand
+- id: forge-val-can-pot-occluded-randomcam-randomlight
+  instruction: Move the can next to the pot, despite the clutter, changing
+    lighting, and varying camera viewpoint. The can is hidden behind another
+    object and is not visible; move the occluding object aside to find it first.
+  mission_type: PICK_AND_PLACE
+  objects:
+  - can
+  - pot
+  - occluder
+  initial_scene:
+    task_name: move_can_pot_occluded
+    embodiment:
+    - franka-panda
+    domain_randomization:
+      random_background: false
+      cluttered_table: false
+      clean_background_rate: 0
+      random_head_camera_dis: 0.1
+      random_table_height: 0
+      random_light: true
+      crazy_random_light_rate: 0.1
+    seed: 310
+    render_freq: 0
+    save_data: false
+    collect_data: false
+  success_criteria:
+  - can is placed next to the pot
+  - pot remains upright at its original position
+  metadata:
+    split: val
+    forge_role: prompt_validation
+    category: forge_occlusion
+    difficulty: hard
+    occlusion_pattern: occ-cover-hidden-target-randomcam-randomlight
+    occlusion_axes:
+      clutter: false
+      lighting: random
+      camera: random
+    occlusion_sources:
+    - a cup is parked next to the target can and covers it; the can stays
+      hidden from the detection set until the occluder is moved aside
+    - randomized head-camera viewpoint and lighting change visibility
+      conditions versus the train variant
+    seed_range:
+    - 310
+    - 330
+    max_rounds: 8
+    allowed_actions:
+    - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
+    - REOBSERVE
+    - STOP
+    failure_criteria:
+    - can dropped outside the table workspace
+    - pot tipped over or pushed off its original position
+    - max_rounds exceeded
+    robottwin_task_name: move_can_pot_occluded
+    robottwin_task_config: demo_clean
+    object_actors:
+      can: can
+      pot: pot
+      occluder: occluder
+    hidden_by:
+      can:
+      - occluder
+    cover_radius: 0.25
+    grasp_contact_point_id: true
+    place_offsets:
+      pot:
+        offset:
+        - 0.18
+        - 0.0
+        - 0.0
+        mirror_with_arm: true
