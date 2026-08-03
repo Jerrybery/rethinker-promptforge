@@ -44,6 +44,13 @@ if str(SRC_DIR) not in sys.path:
 
 from loguru import logger
 
+import faulthandler
+
+# Watchdog: dump all thread stacks to stderr every 15 min so a wedged
+# episode (e.g. stuck in SAPIEN camera readback) leaves Python-level
+# evidence in the run log without needing py-spy.
+faulthandler.dump_traceback_later(900, repeat=True)
+
 from evaluation.batch import make_run_dir
 from forge.loader import load_forge_tasks
 from forge.runner import ForgeRunner
