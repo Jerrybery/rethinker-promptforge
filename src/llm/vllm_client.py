@@ -44,6 +44,7 @@ class VLLMClient:
             self.model_id = "openvla/openvla-7b" if config_section == "vllm" else None
         self.temperature = cfg.get("temperature", 0.0)
         self.top_p = cfg.get("top_p", 1.0)
+        self.reasoning_effort = cfg.get("reasoning_effort")
         self.max_tokens = cfg.get("max_tokens", 512)
         self.max_retries = max_retries
         self.base_delay = base_delay
@@ -112,13 +113,18 @@ class VLLMClient:
         self, messages: list[dict], images: list[np.ndarray] | None
     ) -> dict[str, Any]:
         """Build the OpenAI-compatible chat completion payload."""
-        return {
+        payload = {
             "model": self.model_id,
             "messages": self._build_messages(messages, images),
             "temperature": self.temperature,
             "top_p": self.top_p,
             "max_tokens": self.max_tokens,
         }
+        # Reasoning models (e.g. kimi-for-coding): cap the thinking budget so
+        # long prompts cannot exhaust max_tokens on reasoning_content alone.
+        if self.reasoning_effort is not None:
+            payload["reasoning_effort"] = self.reasoning_effort
+        return payload
 
     def chat(self, messages: list[dict], images: list[np.ndarray] | None = None) -> str:
         """Send a chat request and return the assistant's text content.
@@ -135,12 +141,22 @@ class VLLMClient:
         last_exception: Exception | None = None
         for attempt in range(self.max_retries + 1):
             try:
-                response = requests.post(url, headers=headers, json=payload, timeout=60)
+                response = requests.post(url, headers=headers, json=payload, timeout=180)
                 response.raise_for_status()
                 data = response.json()
-                content_text = data["choices"][0]["message"].get("content", "")
+                message = data["choices"][0]["message"]
+                content_text = message.get("content", "")
                 if not isinstance(content_text, str):
                     raise ValueError(f"Unexpected content type: {type(content_text)}")
+                if not content_text.strip():
+                    # Reasoning models (e.g. kimi-for-coding) can exhaust
+                    # max_tokens on reasoning_content and return an empty
+                    # content; treat as retryable so the retry loop kicks in
+                    # instead of silently returning "" to the parser.
+                    raise ValueError(
+                        "empty content in chat response "
+                        f"(reasoning_content len={len(message.get('reasoning_content') or '')})"
+                    )
                 return content_text
             except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
                 last_exception = exc
