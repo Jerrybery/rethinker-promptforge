@@ -54,6 +54,10 @@ from forge.actions import planner_output_to_sim_action
 from forge.critic import CriticResult, StageScores
 from forge.memory import ForgePlannerMemory
 from forge.planner_agent import ForgePlannerAgent, obs_to_rethinker_output
+from forge.strategy_metrics import (
+    aggregate_strategy_metrics,
+    episode_strategy_metrics,
+)
 from forge.registry import ForgePromptRegistry, PromptVersion
 from tasks.schema import TaskDefinition
 
@@ -77,7 +81,9 @@ class TaskValidationMetrics(BaseModel):
     ``stage_scores`` (means across the critic's per-episode evaluations) and
     ``video_score`` (mean of the three dims of the critic's ``"episode"``
     stage evaluation) are ``None`` when no critic ran or the critic filtered
-    the episode without evaluations.
+    the episode without evaluations. ``move_aside_first`` is the per-episode
+    semantic strategy flag (None when not applicable); see
+    :mod:`forge.strategy_metrics`.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -88,6 +94,9 @@ class TaskValidationMetrics(BaseModel):
     steps: int = Field(..., ge=0)
     stage_scores: StageScores | None = None
     video_score: float | None = Field(default=None, ge=0.0, le=1.0)
+    move_aside_first: bool | None = None
+    presence_violations: int = Field(default=0, ge=0)
+    action_count: int = Field(default=0, ge=0)
 
 
 class ValidationResult(BaseModel):
@@ -110,6 +119,9 @@ class ValidationResult(BaseModel):
     composite: float = Field(..., ge=0.0, le=1.0)
     baseline_composite: float | None = Field(default=None, ge=0.0, le=1.0)
     baseline_average_steps: float | None = Field(default=None, ge=0.0)
+    move_aside_first_rate: float | None = Field(default=None, ge=0.0, le=1.0)
+    presence_violation_rate: float = Field(default=0.0, ge=0.0)
+    mean_action_count: float = Field(default=0.0, ge=0.0)
     accepted: bool
     reason: str
 
@@ -160,14 +172,33 @@ def rollout_episode(
     done = False
     truncated = False
     success = False
+    presence_violations = 0
+    violation_stop = False
 
     while not done and len(steps) < max_rounds:
         step_index = len(steps)
-        rethinker_output = obs_to_rethinker_output(obs)
-        output = planner.act_from_obs(
-            obs, memory=memory, previous_feedback=feedback
-        )
-        action = planner_output_to_sim_action(output)
+        try:
+            rethinker_output = obs_to_rethinker_output(obs)
+            output = planner.act_from_obs(
+                obs, memory=memory, previous_feedback=feedback
+            )
+            action = planner_output_to_sim_action(output)
+        except ValueError as exc:
+            if "not in the DINO label set" not in str(exc):
+                raise
+            # Planner emitted a label outside the current detections
+            # (e.g. picked an occluded/hidden object). Record it as a
+            # presence violation and end the episode gracefully so the
+            # steps so far stay available for strategy metrics; previously
+            # this surfaced as a zero-step crashed episode.
+            presence_violations += 1
+            violation_stop = True
+            logger.warning(
+                "rollout_episode: presence violation on task {!r}: {}",
+                task.id if hasattr(task, "id") else env.task.id,
+                exc,
+            )
+            break
         obs, reward, done, info = env.step(action)
 
         env_success = info.get("success")
@@ -201,6 +232,8 @@ def rollout_episode(
 
     episode_id = f"rollout-{env.task.id}-{uuid.uuid4().hex[:8]}"
     termination = TERMINATION_STOP if (done and not truncated) else TERMINATION_MAX_ROUNDS
+    if violation_stop:
+        termination = "presence_violation"
     logger.info(
         "rollout_episode: task={!r} steps={} success={} termination={}",
         env.task.id,
@@ -212,7 +245,11 @@ def rollout_episode(
         id=episode_id,
         task_id=env.task.id,
         steps=steps,
-        metadata={"success": success, "termination_reason": termination},
+        metadata={
+            "success": success,
+            "termination_reason": termination,
+            "presence_violations": presence_violations,
+        },
     )
 
 
@@ -313,12 +350,26 @@ class PromptValidator:
             version, success_rate, average_steps, baseline
         )
 
+        strategy = aggregate_strategy_metrics(
+            [
+                {
+                    "action_count": m.action_count,
+                    "presence_violations": m.presence_violations,
+                    "move_aside_first": m.move_aside_first,
+                }
+                for m in per_task
+            ]
+        )
         metrics = {
             SUCCESS_RATE_METRIC: success_rate,
             AVERAGE_STEPS_METRIC: average_steps,
             COMPOSITE_METRIC: success_rate,
             NUM_TASKS_METRIC: float(len(per_task)),
+            "presence_violation_rate": strategy["presence_violation_rate"],
+            "mean_action_count": strategy["mean_action_count"],
         }
+        if strategy["move_aside_first_rate"] is not None:
+            metrics["move_aside_first_rate"] = strategy["move_aside_first_rate"]
         if mean_video_score is not None:
             metrics[MEAN_VIDEO_SCORE_METRIC] = mean_video_score
         self._registry.record_validation(
@@ -339,6 +390,9 @@ class PromptValidator:
             composite=success_rate,
             baseline_composite=baseline[0] if baseline else None,
             baseline_average_steps=baseline[1] if baseline else None,
+            move_aside_first_rate=strategy["move_aside_first_rate"],
+            presence_violation_rate=strategy["presence_violation_rate"],
+            mean_action_count=strategy["mean_action_count"],
             accepted=accepted,
             reason=reason,
         )
@@ -380,6 +434,7 @@ class PromptValidator:
         if critic_fn is not None:
             stage_scores, video_score = _summarize_critic(critic_fn(episode, task))
 
+        strategy = episode_strategy_metrics(episode, task)
         return TaskValidationMetrics(
             task_id=task.id,
             episode_id=episode.id,
@@ -387,6 +442,9 @@ class PromptValidator:
             steps=evaluation.steps,
             stage_scores=stage_scores,
             video_score=video_score,
+            move_aside_first=strategy["move_aside_first"],
+            presence_violations=strategy["presence_violations"],
+            action_count=strategy["action_count"],
         )
 
     def _baseline(

@@ -36,6 +36,10 @@ from loguru import logger
 from forge.env import SimEnv
 from forge.loader import load_forge_tasks
 from forge.planner_agent import ForgePlannerAgent
+from forge.strategy_metrics import (
+    aggregate_strategy_metrics,
+    episode_strategy_metrics,
+)
 from forge.validator import rollout_episode
 from llm.vllm_client import VLLMClient
 
@@ -73,6 +77,7 @@ def main() -> int:
         for k in range(args.episodes_per_task):
             for tag, text in (("A", text_a), ("B", text_b)):
                 planner.set_prompt_text(text)
+                violation = 0
                 try:
                     ep = rollout_episode(env, planner, task, args.max_rounds)
                     success = bool((ep.metadata or {}).get("success", False))
@@ -84,6 +89,17 @@ def main() -> int:
                     # the forge runner's per-rollout guard.
                     logger.warning("rollout crashed ({} {} r{}): {}", tag, task.id, k, exc)
                     success, steps, termination = False, 0, "error"
+                    if "not in the DINO label set" in str(exc):
+                        violation = 1
+                strat = (
+                    episode_strategy_metrics(ep, task)
+                    if termination != "error"
+                    else {
+                        "action_count": steps,
+                        "presence_violations": violation,
+                        "move_aside_first": None,
+                    }
+                )
                 rec = {
                     "version": tag,
                     "task_id": task.id,
@@ -91,6 +107,7 @@ def main() -> int:
                     "success": success,
                     "steps": steps,
                     "termination": termination,
+                    **strat,
                 }
                 episodes.append(rec)
                 print(f"[{tag}] {task.id} r{k}: success={rec['success']} "
@@ -101,9 +118,25 @@ def main() -> int:
                and (task_id is None or e["task_id"] == task_id)]
         return sum(e["success"] for e in eps) / len(eps) if eps else 0.0
 
+    def strat_of(version: str, task_id: str | None = None) -> dict:
+        eps = [e for e in episodes if e["version"] == version
+               and (task_id is None or e["task_id"] == task_id)]
+        return aggregate_strategy_metrics(
+            [
+                {
+                    "action_count": e["action_count"],
+                    "presence_violations": e["presence_violations"],
+                    "move_aside_first": e["move_aside_first"],
+                }
+                for e in eps
+            ]
+        )
+
     per_task = {
         t.id: {"A": rate("A", t.id), "B": rate("B", t.id),
-               "delta": rate("B", t.id) - rate("A", t.id)}
+               "delta": rate("B", t.id) - rate("A", t.id),
+               "A_strategy": strat_of("A", t.id),
+               "B_strategy": strat_of("B", t.id)}
         for t in tasks
     }
     summary = {
@@ -112,7 +145,9 @@ def main() -> int:
         "prompts": {"A": str(args.a), "B": str(args.b)},
         "episodes_per_task": args.episodes_per_task,
         "overall": {"A": rate("A"), "B": rate("B"),
-                    "delta": rate("B") - rate("A")},
+                    "delta": rate("B") - rate("A"),
+                    "A_strategy": strat_of("A"),
+                    "B_strategy": strat_of("B")},
         "per_task": per_task,
         "episodes": episodes,
     }
