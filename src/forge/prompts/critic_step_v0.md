@@ -18,6 +18,11 @@ You are an expert critic for robot manipulation episodes. You are given a short 
    - `efficiency`: was the step direct and necessary?
    - `safety`: did the step avoid risks?
 3. Cite concrete evidence referencing the window frames and the step index.
+4. Classify the failure with `failure_class`:
+   - `semantic`: the planner/policy decision was wrong for the goal (wrong target object, missing reveal/clearing step, premature STOP, redundant action loop, picking an object that is not visible).
+   - `execution`: the decision was right but the motion failed physically (grasp slipped or did not hold, placement precision, unreachable pose).
+   - `environment`: the scene itself was at fault (unstable spawn, occluder/asset defect, out-of-workspace layout).
+   Use `execution` when uncertain.
 
 ## Output schema
 
@@ -28,6 +33,7 @@ Respond with ONLY a JSON object, no extra text:
   "stage": "step:$step_index",
   "scores": {"correctness": 0.0, "efficiency": 0.0, "safety": 0.0},
   "root_cause": "one-paragraph root cause for this step's outcome",
-  "evidence": "references to window frames / step $step_index"
+  "evidence": "references to window frames / step $step_index",
+  "failure_class": "semantic | execution | environment"
 }
 ```

@@ -233,6 +233,25 @@ class OptimizerLLM:
                 f"got {len(rejected_texts)} texts for {len(rejected_history)} versions"
             )
         budget = self.budget_chars if budget_chars is None else int(budget_chars)
+        # Hard attribution (design 5.5.5): prompt edits are only justified
+        # by SEMANTIC failures (bad planner decisions). Execution noise
+        # (grasp slip, placement precision) is not prompt-fixable; an epoch
+        # whose evaluations carry no semantic failure yields no edits.
+        if evaluations:
+            semantic = [e for e in evaluations if e.failure_class == "semantic"]
+            n_exec = sum(1 for e in evaluations if e.failure_class == "execution")
+            n_env = sum(1 for e in evaluations if e.failure_class == "environment")
+            if not semantic:
+                logger.info(
+                    "propose_edits: no repairable semantic failures among "
+                    "{} evaluations (execution={}, environment={}); epoch "
+                    "produces no candidate",
+                    len(evaluations),
+                    n_exec,
+                    n_env,
+                )
+                return []
+            evaluations = semantic
         prompt = self._render(best_prompt, evaluations, rejected_history, budget)
         edits = self._call_and_parse(prompt)
         kept = self._filter(edits, rejected_history, budget, rejected_texts)

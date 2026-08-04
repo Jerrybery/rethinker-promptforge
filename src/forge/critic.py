@@ -75,6 +75,10 @@ class StageEvaluation(BaseModel):
     scores: StageScores
     root_cause: str
     evidence: str
+    # Hard-attribution class (design 5.5.5): the optimizer only edits on
+    # "semantic" failures. Defaults to "execution" so pre-classification
+    # outputs stay conservative (never trigger prompt edits by accident).
+    failure_class: Literal["semantic", "execution", "environment"] = "execution"
 
 
 class PrefilterVerdict(BaseModel):

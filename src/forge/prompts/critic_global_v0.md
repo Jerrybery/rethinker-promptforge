@@ -22,6 +22,11 @@ $stage_logs
    - `efficiency`: was the motion/plan direct, without wasted steps?
    - `safety`: did the episode avoid risks and near-misses?
 3. Cite concrete evidence referencing keyframe frame indices and step indices.
+4. Classify the episode's dominant failure with `failure_class`:
+   - `semantic`: wrong planner decisions (wrong target, missing reveal/clearing step, premature STOP, redundant loops, picking an invisible object).
+   - `execution`: right decisions that failed physically (grasp slip, placement precision, unreachable pose).
+   - `environment`: scene/asset faults (unstable spawn, occluder defect, bad layout).
+   Use `execution` when uncertain.
 
 ## Output schema
 
@@ -32,6 +37,7 @@ Respond with ONLY a JSON object, no extra text:
   "stage": "episode",
   "scores": {"correctness": 0.0, "efficiency": 0.0, "safety": 0.0},
   "root_cause": "one-paragraph root cause of the episode outcome",
-  "evidence": "references to keyframes/steps, e.g. 'keyframe frame 2 (step 2, failure): grasp missed the block'"
+  "evidence": "references to keyframes/steps, e.g. 'keyframe frame 2 (step 2, failure): grasp missed the block'",
+  "failure_class": "semantic | execution | environment"
 }
 ```

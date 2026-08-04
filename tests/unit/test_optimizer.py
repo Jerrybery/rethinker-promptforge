@@ -26,6 +26,7 @@ def _eval(stage: str = "episode", root_cause: str = "planner re-attempted failed
         scores=StageScores(correctness=0.2, efficiency=0.3, safety=0.9),
         root_cause=root_cause,
         evidence="keyframe frame 2 (step 2, failure): grasp missed the block",
+        failure_class="semantic",
     )
 
 
@@ -511,3 +512,39 @@ def test_apply_edits_round_trip_from_propose_edits():
     out = apply_edits(PROMPT_TEXT, edits)
     assert "- Never re-attempt a failed grasp more than once." in out
     assert out.startswith("# Planner Prompt")
+
+
+# --------------------------------------------------------------------- #
+# propose_edits: semantic-failure filter (hard attribution)
+# --------------------------------------------------------------------- #
+
+
+def test_propose_edits_skips_when_only_execution_failures() -> None:
+    client = _client(json.dumps([_edit_dict()]))
+    opt = _optimizer(client)
+    execution_only = [
+        _eval().model_copy(update={"failure_class": "execution"}),
+        _eval().model_copy(update={"failure_class": "execution"}),
+    ]
+    assert opt.propose_edits("prompt text", execution_only, []) == []
+    client.chat.assert_not_called()
+
+
+def test_propose_edits_skips_when_only_environment_failures() -> None:
+    client = _client(json.dumps([_edit_dict()]))
+    opt = _optimizer(client)
+    env_only = [_eval().model_copy(update={"failure_class": "environment"})]
+    assert opt.propose_edits("prompt text", env_only, []) == []
+    client.chat.assert_not_called()
+
+
+def test_propose_edits_uses_only_semantic_evaluations() -> None:
+    client = _client(json.dumps([_edit_dict()]))
+    opt = _optimizer(client)
+    mixed = [
+        _eval().model_copy(update={"failure_class": "execution"}),
+        _eval(),  # semantic (helper default)
+    ]
+    edits = opt.propose_edits("prompt text", mixed, [])
+    assert len(edits) == 1
+    assert client.chat.call_count == 1
