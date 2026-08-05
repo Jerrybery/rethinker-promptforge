@@ -16,7 +16,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
-from common.schema import Episode, EpisodeStep, RethinkerOutput
+from common.schema import Episode, EpisodeStep, PlannerOutput, RethinkerOutput
 from forge.critic import (
     CriticModelMetadata,
     CriticResult,
@@ -220,7 +220,14 @@ def _task(task_id: str, criteria: list[str] | None = None) -> TaskDefinition:
     )
 
 
-def _episode(task_id: str, *, success: bool, steps: int) -> Episode:
+def _episode(
+    task_id: str,
+    *,
+    success: bool,
+    steps: int,
+    with_actions: bool = False,
+    violations: int = 0,
+) -> Episode:
     task_unit = _task(task_id)
     return Episode(
         id=f"ep-{task_id}-{'ok' if success else 'fail'}",
@@ -232,12 +239,20 @@ def _episode(task_id: str, *, success: bool, steps: int) -> Episode:
                 rethinker_output=RethinkerOutput(
                     mission_type="PICK_ONLY", reasoning="scripted"
                 ),
+                planner_output=(
+                    PlannerOutput(
+                        plan_id=f"s{i}", mission="PICK_ONLY", pick="mock_object"
+                    )
+                    if with_actions
+                    else None
+                ),
             )
             for i in range(steps)
         ],
         metadata={
             "success": success,
             "termination_reason": "stop" if success else "max_rounds",
+            "presence_violations": violations,
         },
     )
 
@@ -717,3 +732,181 @@ def test_validate_default_rollout_uses_env_and_planner(
     assert result.accepted is True
     assert result.success_rate == 1.0
     assert result.per_task[0].steps == 1
+
+
+# --------------------------------------------------------------------- #
+# Adaptive gate: screening phase
+# --------------------------------------------------------------------- #
+
+
+def _dup_tasks(task_ids: list[str], copies: int) -> list[TaskDefinition]:
+    return [_task(tid) for tid in task_ids for _ in range(copies)]
+
+
+def test_screening_rejection_skips_remaining_rollouts(
+    registry: ForgePromptRegistry,
+) -> None:
+    """A candidate far below baseline after 2 rollouts/task is rejected
+    without spending the remaining validation budget."""
+    best = _seed_best(registry)  # success_rate 0.5, average_steps 4.0
+    cand = _candidate(registry, best)
+    tasks = _dup_tasks(["t1", "t2"], 4)  # x4 budget = 16 episodes
+    rollout = ScriptedRollout()
+    for i in range(4):
+        rollout.set(cand.version_id, "t1", success=False, steps=8)
+        rollout.set(cand.version_id, "t2", success=False, steps=8)
+    # Script the full budget; screening must only consume the first 2/task.
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.accepted is False
+    assert "screening rejection" in result.reason
+    cand_calls = [c for c in rollout.calls if c[0] == cand.version_id]
+    assert len(cand_calls) == 4  # 2 per task, not 4 per task
+    assert result.success_rate == 0.0
+    assert len(result.per_task) == 4
+
+
+def test_competitive_screening_runs_full_budget(
+    registry: ForgePromptRegistry,
+) -> None:
+    """A candidate within the screening margin gets the full x4 validation."""
+    best = _seed_best(registry)  # success_rate 0.5, average_steps 4.0
+    cand = _candidate(registry, best)
+    tasks = _dup_tasks(["t1", "t2"], 4)
+    rollout = ScriptedRollout()
+    for i in range(4):
+        rollout.set(cand.version_id, "t1", success=True, steps=2)
+        rollout.set(cand.version_id, "t2", success=True, steps=2)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.accepted is True
+    cand_calls = [c for c in rollout.calls if c[0] == cand.version_id]
+    assert len(cand_calls) == 8  # full 4 per task
+    assert result.success_rate == 1.0
+    assert len(result.per_task) == 8
+
+
+def test_screening_at_margin_proceeds_to_full_budget(
+    registry: ForgePromptRegistry,
+) -> None:
+    """Screening at exactly baseline - margin proceeds (not early-rejected);
+    the final decision still uses the full-budget aggregate."""
+    best = _seed_best(registry)  # success_rate 0.5, average_steps 4.0
+    cand = _candidate(registry, best)
+    tasks = _dup_tasks(["t1", "t2"], 4)
+    rollout = ScriptedRollout()
+    # screening = 2/4 = 0.5 >= 0.375 -> proceeds; full = 4/8 = 0.5 tie ->
+    # decision on average_steps (4.0 tie -> rejected as no improvement).
+    rollout.set(cand.version_id, "t1", success=True, steps=4)
+    rollout.set(cand.version_id, "t2", success=False, steps=4)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+    assert result.accepted is False
+    assert "screening rejection" not in result.reason
+    assert "no strict improvement" in result.reason
+    cand_calls = [c for c in rollout.calls if c[0] == cand.version_id]
+    assert len(cand_calls) == 8
+
+
+# --------------------------------------------------------------------- #
+# Dual-channel gate: semantic channel (channel B)
+# --------------------------------------------------------------------- #
+
+_BASE_METRICS_WITH_SEMANTIC = {
+    "success_rate": 0.5,
+    "average_steps": 4.0,
+    "composite": 0.5,
+    "presence_violation_rate": 0.1,
+    "decoy_pick_rate": 0.1,
+}
+
+
+def test_channel_b_accepts_semantic_improvement_on_tied_rate(
+    registry: ForgePromptRegistry,
+) -> None:
+    best = _seed_best(registry, metrics=dict(_BASE_METRICS_WITH_SEMANTIC))
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    rollout.set(cand.version_id, "t1", success=True, steps=4)
+    rollout.set(cand.version_id, "t2", success=False, steps=4)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    # rate tied 0.5; scripted episodes have no actions/violations/decoys
+    # -> both semantic rates 0.0 < baseline 0.1 -> channel B accept
+    assert result.accepted is True
+    assert result.accepted_via == "semantic"
+    assert "semantic improvement" in result.reason
+
+
+def test_channel_b_rejects_when_rates_not_lower(
+    registry: ForgePromptRegistry,
+) -> None:
+    best = _seed_best(registry, metrics=dict(_BASE_METRICS_WITH_SEMANTIC))
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    # candidate has violations: 2 violations / 8 actions = 0.25 > 0.1
+    rollout.script[(cand.version_id, "t1")] = _episode(
+        "t1", success=True, steps=4, with_actions=True, violations=2
+    )
+    rollout.script[(cand.version_id, "t2")] = _episode(
+        "t2", success=False, steps=4, with_actions=True, violations=0
+    )
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.accepted is False
+    assert result.accepted_via is None
+
+
+def test_channel_b_rejects_below_rate_tolerance(
+    registry: ForgePromptRegistry,
+) -> None:
+    best = _seed_best(registry, metrics=dict(_BASE_METRICS_WITH_SEMANTIC))
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2"), _task("t3"), _task("t4"), _task("t5")]
+    rollout = ScriptedRollout()
+    # 1/5 = 0.2 < 0.5 - 0.05 -> outside tolerance even with clean semantics
+    rollout.set(cand.version_id, "t1", success=True, steps=2)
+    for t in ("t2", "t3", "t4", "t5"):
+        rollout.set(cand.version_id, t, success=False, steps=2)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    assert result.accepted is False
+    assert result.accepted_via is None
+
+
+def test_channel_b_unavailable_without_baseline_semantic_metrics(
+    registry: ForgePromptRegistry,
+) -> None:
+    best = _seed_best(registry)  # legacy metrics: no semantic keys
+    cand = _candidate(registry, best)
+    tasks = [_task("t1"), _task("t2")]
+    rollout = ScriptedRollout()
+    rollout.set(cand.version_id, "t1", success=True, steps=4)
+    rollout.set(cand.version_id, "t2", success=False, steps=4)
+
+    result = PromptValidator(registry).validate(
+        cand, tasks, rollout_fn=rollout, timestamp=TS3
+    )
+
+    # tie on rate and steps, channel B unavailable -> reject
+    assert result.accepted is False
+    assert result.accepted_via is None

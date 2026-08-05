@@ -17,11 +17,21 @@ over the held-out task set:
   so a candidate cannot game the metric by failing fast, and a candidate
   with no successes gets the worst-case ``max_rounds``).
 
-A candidate is accepted iff its key is STRICTLY greater than the incumbent
-best's key, i.e. ``success_rate`` is strictly higher, or equal with strictly
-fewer average steps. An exact tie is rejected. The scalar
-``ValidationResult.composite`` (and the ``"composite"`` metric written to
-the registry) is the primary component, ``success_rate``.
+A candidate is accepted via one of two channels:
+
+- **channel A (``"success"``)**: its key is STRICTLY greater than the
+  incumbent best's key, i.e. ``success_rate`` is strictly higher, or equal
+  with strictly fewer average steps. An exact tie is rejected.
+- **channel B (``"semantic"``)**: ``success_rate`` within 0.05 of the
+  baseline AND at least one semantic rate (presence-violation rate or
+  decoy-pick rate) strictly lower with the other not higher. Binary
+  success is dominated by physical execution noise; the semantic channel
+  lets genuine strategy improvements through on a tied noise floor.
+
+The scalar ``ValidationResult.composite`` (and the ``"composite"`` metric
+written to the registry) is the primary component, ``success_rate``.
+``ValidationResult.accepted_via`` (and the reason text recorded in the
+registry detail) records which channel accepted.
 
 Baseline
 --------
@@ -69,6 +79,16 @@ NUM_TASKS_METRIC = "num_tasks"
 MEAN_VIDEO_SCORE_METRIC = "mean_video_score"
 
 TERMINATION_STOP = "stop"
+
+# Adaptive gate: candidates are first screened with 2 rollouts per task;
+# only competitive ones earn the full validation budget. A candidate this
+# far below the incumbent at screening can only win on noise anyway.
+_SCREENING_MARGIN = 0.125
+_SCREENING_ROUNDS = 2
+
+# Semantic channel (channel B) success-rate tolerance: a candidate this
+# close on binary success may still be accepted on semantic rates.
+_SEMANTIC_RATE_TOLERANCE = 0.05
 TERMINATION_MAX_ROUNDS = "max_rounds"
 
 RolloutFn = Callable[[str, TaskDefinition], Episode]
@@ -97,6 +117,7 @@ class TaskValidationMetrics(BaseModel):
     move_aside_first: bool | None = None
     presence_violations: int = Field(default=0, ge=0)
     action_count: int = Field(default=0, ge=0)
+    decoy_picks: int = Field(default=0, ge=0)
 
 
 class ValidationResult(BaseModel):
@@ -121,9 +142,11 @@ class ValidationResult(BaseModel):
     baseline_average_steps: float | None = Field(default=None, ge=0.0)
     move_aside_first_rate: float | None = Field(default=None, ge=0.0, le=1.0)
     presence_violation_rate: float = Field(default=0.0, ge=0.0)
+    decoy_pick_rate: float = Field(default=0.0, ge=0.0)
     mean_action_count: float = Field(default=0.0, ge=0.0)
     accepted: bool
     reason: str
+    accepted_via: str | None = None
 
 
 class RolloutSuccessChecker:
@@ -335,19 +358,52 @@ class PromptValidator:
         )
 
         active_critic = critic_fn if use_critic else None
+        baseline = self._baseline(version, val_tasks, rollout)
+
+        # Group repeat-rollout entries by task id; entry i of a group is
+        # rollout round i for that task. Screening = the first
+        # _SCREENING_ROUNDS rounds (2 episodes per task with the x4 budget).
+        groups: dict[str, list[TaskDefinition]] = {}
+        for task in val_tasks:
+            groups.setdefault(task.id, []).append(task)
+        n_rounds = max(len(entries) for entries in groups.values())
+        screen_rounds = min(_SCREENING_ROUNDS, n_rounds)
+
+        def round_tasks(r: int) -> list[TaskDefinition]:
+            return [entries[r] for entries in groups.values() if r < len(entries)]
+
         per_task = [
             self._evaluate_task(version.version_id, task, rollout, active_critic)
-            for task in val_tasks
+            for r in range(screen_rounds)
+            for task in round_tasks(r)
         ]
+        screen_rate, _ = self._aggregate(per_task)
+
+        early_reject = (
+            baseline is not None
+            and n_rounds > screen_rounds
+            and screen_rate < baseline[0] - _SCREENING_MARGIN
+        )
+        if early_reject:
+            logger.info(
+                "Candidate {} rejected at screening: success_rate {:.3f} < "
+                "baseline {:.3f} - {:.3f}; skipping {} remaining rollout(s)",
+                version.version_id,
+                screen_rate,
+                baseline[0],
+                _SCREENING_MARGIN,
+                sum(len(round_tasks(r)) for r in range(screen_rounds, n_rounds)),
+            )
+        else:
+            per_task.extend(
+                self._evaluate_task(version.version_id, task, rollout, active_critic)
+                for r in range(screen_rounds, n_rounds)
+                for task in round_tasks(r)
+            )
         success_rate, average_steps = self._aggregate(per_task)
         video_scores = [m.video_score for m in per_task if m.video_score is not None]
         mean_video_score = (
             sum(video_scores) / len(video_scores) if video_scores else None
-        )
-
-        baseline = self._baseline(version, val_tasks, rollout)
-        accepted, reason = self._decide(
-            version, success_rate, average_steps, baseline
         )
 
         strategy = aggregate_strategy_metrics(
@@ -356,10 +412,24 @@ class PromptValidator:
                     "action_count": m.action_count,
                     "presence_violations": m.presence_violations,
                     "move_aside_first": m.move_aside_first,
+                    "decoy_picks": m.decoy_picks,
                 }
                 for m in per_task
             ]
         )
+
+        if early_reject:
+            accepted = False
+            reason = (
+                f"screening rejection: success_rate {screen_rate:.3f} below "
+                f"baseline {baseline[0]:.3f} - {_SCREENING_MARGIN:.3f}; "
+                "full validation skipped"
+            )
+            accepted_via: str | None = None
+        else:
+            accepted, reason, accepted_via = self._decide(
+                version, success_rate, average_steps, baseline, strategy
+            )
         metrics = {
             SUCCESS_RATE_METRIC: success_rate,
             AVERAGE_STEPS_METRIC: average_steps,
@@ -367,6 +437,7 @@ class PromptValidator:
             NUM_TASKS_METRIC: float(len(per_task)),
             "presence_violation_rate": strategy["presence_violation_rate"],
             "mean_action_count": strategy["mean_action_count"],
+            "decoy_pick_rate": strategy["decoy_pick_rate"],
         }
         if strategy["move_aside_first_rate"] is not None:
             metrics["move_aside_first_rate"] = strategy["move_aside_first_rate"]
@@ -392,9 +463,11 @@ class PromptValidator:
             baseline_average_steps=baseline[1] if baseline else None,
             move_aside_first_rate=strategy["move_aside_first_rate"],
             presence_violation_rate=strategy["presence_violation_rate"],
+            decoy_pick_rate=strategy["decoy_pick_rate"],
             mean_action_count=strategy["mean_action_count"],
             accepted=accepted,
             reason=reason,
+            accepted_via=accepted_via,
         )
 
     # ------------------------------------------------------------------ #
@@ -445,6 +518,7 @@ class PromptValidator:
             move_aside_first=strategy["move_aside_first"],
             presence_violations=strategy["presence_violations"],
             action_count=strategy["action_count"],
+            decoy_picks=strategy["decoy_picks"],
         )
 
     def _baseline(
@@ -452,18 +526,31 @@ class PromptValidator:
         version: PromptVersion,
         val_tasks: list[TaskDefinition],
         rollout: RolloutFn,
-    ) -> tuple[float, float, bool] | None:
-        """Return ``(success_rate, average_steps, re_evaluated)`` or None."""
+    ) -> tuple[float, float, bool, dict[str, float] | None] | None:
+        """Return ``(success_rate, average_steps, re_evaluated, strategy)``.
+
+        ``strategy`` carries the incumbent's semantic rates
+        (presence_violation_rate / decoy_pick_rate) from its recorded
+        metrics, or re-aggregated when re-evaluated; None when the record
+        predates semantic metrics (semantic channel unavailable).
+        """
         try:
             best = self._registry.best(version.target_agent)
         except LookupError:
             return None
         metrics = best.validation.metrics if best.validation else {}
         if SUCCESS_RATE_METRIC in metrics and AVERAGE_STEPS_METRIC in metrics:
+            strategy = None
+            if "presence_violation_rate" in metrics and "decoy_pick_rate" in metrics:
+                strategy = {
+                    "presence_violation_rate": metrics["presence_violation_rate"],
+                    "decoy_pick_rate": metrics["decoy_pick_rate"],
+                }
             return (
                 metrics[SUCCESS_RATE_METRIC],
                 metrics[AVERAGE_STEPS_METRIC],
                 False,
+                strategy,
             )
         logger.info(
             "Best {} has no recorded {} metrics; re-evaluating on {} task(s)",
@@ -476,7 +563,18 @@ class PromptValidator:
             for task in val_tasks
         ]
         success_rate, average_steps = self._aggregate(per_task)
-        return (success_rate, average_steps, True)
+        strategy = aggregate_strategy_metrics(
+            [
+                {
+                    "action_count": m.action_count,
+                    "presence_violations": m.presence_violations,
+                    "move_aside_first": m.move_aside_first,
+                    "decoy_picks": m.decoy_picks,
+                }
+                for m in per_task
+            ]
+        )
+        return (success_rate, average_steps, True, strategy)
 
     def _aggregate(
         self, per_task: list[TaskValidationMetrics]
@@ -502,32 +600,74 @@ class PromptValidator:
         version: PromptVersion,
         success_rate: float,
         average_steps: float,
-        baseline: tuple[float, float, bool] | None,
-    ) -> tuple[bool, str]:
+        baseline: tuple[float, float, bool, dict[str, float] | None] | None,
+        cand_strategy: dict[str, Any] | None = None,
+    ) -> tuple[bool, str, str | None]:
+        """Dual-channel accept decision; returns (accepted, reason, via).
+
+        Channel A ("success"): strict success_rate improvement, or a tie
+        with strictly fewer average steps.
+        Channel B ("semantic"): success_rate within 0.05 of the baseline
+        AND at least one semantic rate (presence violations / decoy picks)
+        strictly lower with the other not higher. Binary success is
+        dominated by physical execution noise; the semantic channel lets
+        genuine strategy improvements through when the noise floor ties.
+        """
         if baseline is None:
             return True, (
                 f"no incumbent best for {version.target_agent!r}; accepting "
                 f"{version.version_id} as first champion "
                 f"(success_rate={success_rate:.3f})"
-            )
-        base_rate, base_steps, re_evaluated = baseline
+            ), "success"
+        base_rate, base_steps, re_evaluated, base_strategy = baseline
         source = "re-evaluated" if re_evaluated else "recorded"
         if success_rate > base_rate:
             return True, (
                 f"strict improvement over {source} baseline: success_rate "
                 f"{success_rate:.3f} > {base_rate:.3f}"
-            )
+            ), "success"
         if success_rate == base_rate and average_steps < base_steps:
             return True, (
                 f"strict improvement over {source} baseline: success_rate "
                 f"tied at {success_rate:.3f}, average_steps "
                 f"{average_steps:.2f} < {base_steps:.2f}"
+            ), "success"
+        # Channel B: semantic improvement within the success-rate tolerance.
+        if (
+            base_strategy is not None
+            and cand_strategy is not None
+            and success_rate >= base_rate - _SEMANTIC_RATE_TOLERANCE
+        ):
+            better_pvr = (
+                cand_strategy["presence_violation_rate"]
+                < base_strategy["presence_violation_rate"]
             )
+            not_worse_pvr = (
+                cand_strategy["presence_violation_rate"]
+                <= base_strategy["presence_violation_rate"]
+            )
+            better_dpr = (
+                cand_strategy["decoy_pick_rate"] < base_strategy["decoy_pick_rate"]
+            )
+            not_worse_dpr = (
+                cand_strategy["decoy_pick_rate"] <= base_strategy["decoy_pick_rate"]
+            )
+            if (better_pvr and not_worse_dpr) or (better_dpr and not_worse_pvr):
+                return True, (
+                    f"semantic improvement over {source} baseline: "
+                    f"presence_violation_rate "
+                    f"{cand_strategy['presence_violation_rate']:.3f} vs "
+                    f"{base_strategy['presence_violation_rate']:.3f}, "
+                    f"decoy_pick_rate {cand_strategy['decoy_pick_rate']:.3f} vs "
+                    f"{base_strategy['decoy_pick_rate']:.3f} "
+                    f"(success_rate {success_rate:.3f} vs {base_rate:.3f} "
+                    f"within {_SEMANTIC_RATE_TOLERANCE:.2f} tolerance)"
+                ), "semantic"
         return False, (
             f"no strict improvement over {source} baseline: success_rate "
             f"{success_rate:.3f} vs {base_rate:.3f}, average_steps "
             f"{average_steps:.2f} vs {base_steps:.2f}"
-        )
+        ), None
 
 
 def _summarize_critic(result: CriticResult) -> tuple[StageScores | None, float | None]:
