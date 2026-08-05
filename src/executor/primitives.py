@@ -77,12 +77,20 @@ class PrimitiveLibrary:
         object_actors: dict[str, str] | None = None,
         place_offsets: dict[str, Any] | None = None,
         grasp_contact_point_id: bool = False,
+        grasp_pre_dis: float = 0.1,
+        lift_dz: float = 0.08,
+        place_pre_dis: float = 0.05,
+        place_use_held_fp: bool = False,
     ) -> None:
         self.robot = robot
         self.dino = dino
         self.object_actors = dict(object_actors or {})
         self.place_offsets = dict(place_offsets or {})
         self.grasp_contact_point_id = bool(grasp_contact_point_id)
+        self.grasp_pre_dis = float(grasp_pre_dis)
+        self.lift_dz = float(lift_dz)
+        self.place_pre_dis = float(place_pre_dis)
+        self.place_use_held_fp = bool(place_use_held_fp)
 
     # ------------------------------------------------------------------ #
     # Internal helpers
@@ -192,6 +200,7 @@ class PrimitiveLibrary:
                     attr,
                     arm_tag="auto",
                     contact_point_id=self.grasp_contact_point_id,
+                    pre_grasp_dis=self.grasp_pre_dis,
                 )
                 if not grasp.get("success"):
                     return PrimitiveResult(
@@ -199,7 +208,7 @@ class PrimitiveLibrary:
                         status=f"grasp of {label!r} failed",
                         data={"grasp": grasp},
                     )
-                lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=0.08)
+                lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=self.lift_dz)
                 if not lift.get("carried", True):
                     # Gripper closed on nothing (or the object slipped):
                     # retry the grasp with the other contact-point mode.
@@ -212,6 +221,7 @@ class PrimitiveLibrary:
                         attr,
                         arm_tag="auto",
                         contact_point_id=not self.grasp_contact_point_id,
+                        pre_grasp_dis=self.grasp_pre_dis,
                     )
                     if not grasp.get("success"):
                         return PrimitiveResult(
@@ -219,7 +229,7 @@ class PrimitiveLibrary:
                             status=f"grasp of {label!r} failed",
                             data={"grasp": grasp},
                         )
-                    lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=0.08)
+                    lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=self.lift_dz)
                 if not lift.get("success"):
                     return PrimitiveResult(
                         success=False,
@@ -278,6 +288,8 @@ class PrimitiveLibrary:
                     target_attr_name=target_attr,
                     offset=offset,
                     mirror_offset_with_arm=mirror,
+                    pre_dis=self.place_pre_dis,
+                    use_held_functional_point=self.place_use_held_fp,
                 )
             except Exception as exc:
                 return PrimitiveResult(
@@ -322,6 +334,7 @@ class PrimitiveLibrary:
                     attr,
                     arm_tag="auto",
                     contact_point_id=self.grasp_contact_point_id,
+                    pre_grasp_dis=self.grasp_pre_dis,
                 )
                 if not grasp.get("success"):
                     return PrimitiveResult(
@@ -329,7 +342,7 @@ class PrimitiveLibrary:
                         status=f"grasp of {label!r} failed",
                         data={"grasp": grasp},
                     )
-                lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=0.08)
+                lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=self.lift_dz)
                 if not lift.get("carried", True):
                     logger.warning(
                         "move_aside {!r}: grasp did not hold; retrying with "
@@ -340,6 +353,7 @@ class PrimitiveLibrary:
                         attr,
                         arm_tag="auto",
                         contact_point_id=not self.grasp_contact_point_id,
+                        pre_grasp_dis=self.grasp_pre_dis,
                     )
                     if not grasp.get("success"):
                         return PrimitiveResult(
@@ -347,7 +361,7 @@ class PrimitiveLibrary:
                             status=f"grasp of {label!r} failed",
                             data={"grasp": grasp},
                         )
-                    lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=0.08)
+                    lift = backend.lift(arm_tag=grasp.get("arm_tag"), dz=self.lift_dz)
                 if not lift.get("success"):
                     return PrimitiveResult(
                         success=False,

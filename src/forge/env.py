@@ -258,6 +258,10 @@ class SimEnv:
                 grasp_contact_point_id=bool(
                     metadata.get("grasp_contact_point_id", False)
                 ),
+                grasp_pre_dis=float(metadata.get("grasp_pre_dis", 0.1)),
+                lift_dz=float(metadata.get("lift_dz", 0.08)),
+                place_pre_dis=float(metadata.get("place_pre_dis", 0.05)),
+                place_use_held_fp=bool(metadata.get("place_use_held_fp", False)),
             )
             active_dino: Any = detector
         else:

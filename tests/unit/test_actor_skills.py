@@ -102,6 +102,10 @@ class _FakeSkillEnv:
         )
         return ("place_actions",)
 
+    def open_gripper(self, arm_tag: Any, pos: float = 1.0) -> tuple:
+        self.calls.append(("open_gripper", arm_tag, pos))
+        return ("open_actions",)
+
     def move_by_displacement(
         self, arm_tag: Any, x: float = 0.0, y: float = 0.0, z: float = 0.0,
         move_axis: str = "world",
@@ -115,6 +119,9 @@ class _FakeSkillEnv:
         if self._pending_lift and self._grasped is not None and not self._no_carry:
             self._grasped._pose[2] += self._pending_lift
         self._pending_lift = 0.0
+        # fail_moves counts only skill moves, not the gripper opener
+        if actions == ("open_actions",):
+            return True
         if self._fail_moves > 0:
             self._fail_moves -= 1
             self.plan_success = False
@@ -258,7 +265,9 @@ def test_place_object_at_uses_functional_point_when_available() -> None:
     backend = _backend(env)
     backend.grasp_object("cup")
 
-    result = backend.place_object_at(target_attr_name="coaster")
+    result = backend.place_object_at(
+        target_attr_name="coaster", use_held_functional_point=True
+    )
 
     assert result["success"] is True
     place_calls = [c for c in env.calls if c[0] == "place_actor"]
@@ -442,7 +451,7 @@ def test_pick_real_path_grasps_and_lifts() -> None:
     assert result.success is True
     assert result.status == "picked 'cup'"
     kinds = [c[0] for c in env.calls]
-    assert kinds == ["grasp_actor", "move", "move_by_displacement", "move"]
+    assert kinds == ["open_gripper", "move", "grasp_actor", "move", "move_by_displacement", "move"]
 
 
 def test_pick_real_path_grasp_failure_returns_failure() -> None:
@@ -463,7 +472,11 @@ def test_place_real_path_onto_functional_point_target() -> None:
             "coaster": _FakeActor(functional_point=fp),
         }
     )
-    library = _real_library(env, object_actors={"cup": "cup", "coaster": "coaster"})
+    library = _real_library(
+        env,
+        object_actors={"cup": "cup", "coaster": "coaster"},
+        place_use_held_fp=True,
+    )
     library.pick("cup")
 
     result = library.place("coaster")

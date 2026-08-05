@@ -270,6 +270,7 @@ class RoboTwinBackend(RobotBackend):
         attr_name: str,
         arm_tag: str = "auto",
         contact_point_id: bool = False,
+        pre_grasp_dis: float = 0.1,
     ) -> dict[str, Any]:
         """Grasp the actor named ``attr_name`` with the env's grasp skill.
 
@@ -299,7 +300,14 @@ class RoboTwinBackend(RobotBackend):
         actor = self.resolve_actor(attr_name)
         arm = self._resolve_arm(arm_tag, actor)
         pre_grasp_pose = [float(v) for v in actor.get_pose().p]
+        # Re-open the gripper before approaching: a previous failed grasp
+        # leaves the fingers closed, and sweeping in with a closed gripper
+        # knocks the target over, poisoning every subsequent attempt.
+        opener = getattr(env, "open_gripper", None)
+        if callable(opener):
+            env.move(opener(self._arm_tag(arm)))
         cpid = {"right": 0, "left": 2}[arm]
+        pre_dis = float(pre_grasp_dis)
         attempts = [cpid, None] if contact_point_id else [None, cpid]
         success = False
         for attempt_cpid in attempts:
@@ -308,7 +316,7 @@ class RoboTwinBackend(RobotBackend):
             )
             try:
                 actions = env.grasp_actor(
-                    actor, self._arm_tag(arm), pre_grasp_dis=0.1, **kwargs
+                    actor, self._arm_tag(arm), pre_grasp_dis=pre_dis, **kwargs
                 )
                 success = bool(env.move(actions))
             except Exception:
@@ -330,6 +338,8 @@ class RoboTwinBackend(RobotBackend):
         arm_tag: str | None = None,
         offset: list[float] | None = None,
         mirror_offset_with_arm: bool = False,
+        pre_dis: float = 0.05,
+        use_held_functional_point: bool = False,
     ) -> dict[str, Any]:
         """Place the grasped actor, optionally onto/beside a target actor.
 
@@ -387,11 +397,15 @@ class RoboTwinBackend(RobotBackend):
             ]
 
         # place_actor's functional_point_id refers to the GRASPED actor's
-        # grasp point (Base_Task.get_place_pose), not the target's. Only
-        # forward it when the held actor actually exposes functional point 0
-        # (cup does; can/toycar do not — passing 0 there crashes).
+        # grasp point (Base_Task.get_place_pose), not the target's. Most
+        # play_once recipes place WITHOUT it (a2b, can_pot, object_stand);
+        # only a few (cup->coaster) pass 0. Forwarding it for any actor
+        # that merely HAS functional points (e.g. the remote control)
+        # misaligns the place pose, so it is opt-in per task; additionally
+        # it is never forwarded when the held actor lacks functional point 0
+        # (can/toycar — passing 0 there crashes).
         functional_point_id: int | None = None
-        if used_target_fp:
+        if used_target_fp and use_held_functional_point:
             try:
                 held_fp = actor.get_functional_point(0, "pose")
             except Exception:
@@ -404,7 +418,7 @@ class RoboTwinBackend(RobotBackend):
             self._arm_tag(arm),
             target_pose=target_pose,
             functional_point_id=functional_point_id,
-            pre_dis=0.05,
+            pre_dis=pre_dis,
         )
         success = bool(env.move(actions))
         if success:
@@ -422,14 +436,23 @@ class RoboTwinBackend(RobotBackend):
 
         The spot stays on the grasping arm's side (short, plannable move),
         toward the front corner of the workspace, far from both the pot
-        area and typical object spawn regions.
+        area and typical object spawn regions. Afterwards the arm returns
+        to its home pose (like the play_once scripts' back_to_origin
+        between phases): without it the next grasp plans from the aside
+        spot and its path can cross the pot rim, failing systematically.
         """
         base = self._grasp_pose or [0.0, 0.0, 0.0]
         tx = 0.25 if base[0] >= 0 else -0.25
         ty = -0.18 if base[1] > -0.1 else 0.2
-        return self.place_object_at(
+        result = self.place_object_at(
             arm_tag=arm_tag, offset=[tx - base[0], ty - base[1], 0.0]
         )
+        if result.get("success"):
+            env = self._require_env()
+            home = getattr(env, "back_to_origin", None)
+            if callable(home):
+                env.move(home(self._arm_tag(result.get("arm_tag", "right"))))
+        return result
 
     def aside_offset(self) -> list[float]:
         """Table-safe move-aside offset from the recorded grasp pose.
