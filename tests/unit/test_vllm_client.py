@@ -204,3 +204,94 @@ def test_client_logs_configuration(config_path: Path, monkeypatch: pytest.Monkey
     assert client.temperature in log_args
     assert client.top_p in log_args
     assert client.max_tokens in log_args
+
+
+
+class _FakeHTTPError(__import__("requests").RequestException):
+    def __init__(self, status_code: int) -> None:
+        super().__init__(f"HTTP {status_code}")
+        self.response = type("Resp", (), {"status_code": status_code})()
+
+
+def _client_for_ratelimit():
+    from llm.vllm_client import VLLMClient
+
+    c = VLLMClient.__new__(VLLMClient)
+    c.model_id = "m"
+    c.base_url = "http://x"
+    c.api_key = None
+    c.temperature = 0.0
+    c.top_p = 1.0
+    c.max_tokens = 16
+    c.max_retries = 3
+    c.base_delay = 0.01
+    c.max_delay = 0.02
+    c.reasoning_effort = None
+    return c
+
+
+def test_rate_limit_uses_long_backoff_then_succeeds(monkeypatch) -> None:
+    import llm.vllm_client as vc
+
+    client = _client_for_ratelimit()
+    calls = {"posts": 0}
+    sleeps: list[float] = []
+
+    def fake_post(*a, **kw):
+        calls["posts"] += 1
+        if calls["posts"] <= 2:
+            raise _FakeHTTPError(429)
+        return type(
+            "Resp",
+            (),
+            {
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {
+                    "choices": [{"message": {"content": "ok"}}]
+                },
+            },
+        )()
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    monkeypatch.setattr(vc.time, "sleep", lambda d: sleeps.append(d))
+
+    assert client.chat([{"role": "user", "content": "hi"}]) == "ok"
+    assert sleeps == [30.0, 60.0]
+    assert calls["posts"] == 3
+
+
+def test_rate_limit_exhausts_extended_budget(monkeypatch) -> None:
+    import llm.vllm_client as vc
+    import pytest
+
+    client = _client_for_ratelimit()
+    sleeps: list[float] = []
+    monkeypatch.setattr(
+        vc.requests, "post",
+        lambda *a, **kw: (_ for _ in ()).throw(_FakeHTTPError(403)),
+    )
+    monkeypatch.setattr(vc.time, "sleep", lambda d: sleeps.append(d))
+
+    with pytest.raises(RuntimeError, match="after 5 attempts"):
+        client.chat([{"role": "user", "content": "hi"}])
+    assert sleeps == [30.0, 60.0, 120.0, 240.0]
+
+
+def test_non_rate_limit_error_keeps_short_backoff(monkeypatch) -> None:
+    import llm.vllm_client as vc
+    import pytest
+    import requests as real_requests
+
+    client = _client_for_ratelimit()
+    sleeps: list[float] = []
+
+    def fake_post(*a, **kw):
+        raise real_requests.ConnectionError("boom")
+
+    monkeypatch.setattr(vc.requests, "post", fake_post)
+    monkeypatch.setattr(vc.time, "sleep", lambda d: sleeps.append(d))
+
+    with pytest.raises(RuntimeError, match="after 4 attempts"):
+        client.chat([{"role": "user", "content": "hi"}])
+    assert all(d <= 0.02 for d in sleeps)
+    assert len(sleeps) == 3

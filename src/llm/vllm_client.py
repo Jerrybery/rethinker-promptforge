@@ -126,11 +126,18 @@ class VLLMClient:
             payload["reasoning_effort"] = self.reasoning_effort
         return payload
 
+    # HTTP 403/429 (rate limit) backoff schedule in seconds; ~7 min total
+    # budget so a call can ride out a whole rate-limit window instead of
+    # hammering it with the generic sub-second retries.
+    RATE_LIMIT_DELAYS = (30.0, 60.0, 120.0, 240.0)
+
     def chat(self, messages: list[dict], images: list[np.ndarray] | None = None) -> str:
         """Send a chat request and return the assistant's text content.
 
         Retries on network errors and malformed responses with exponential
         backoff (``base_delay * 2 ** attempt`` capped at ``max_delay``).
+        HTTP 403/429 (rate limiting) gets a longer schedule
+        (``RATE_LIMIT_DELAYS``) and extra attempts beyond ``max_retries``.
         """
         payload = self._request_payload(messages, images)
         url = f"{self.base_url}/chat/completions"
@@ -139,7 +146,10 @@ class VLLMClient:
             "Content-Type": "application/json",
         }
         last_exception: Exception | None = None
-        for attempt in range(self.max_retries + 1):
+        attempt = 0
+        rate_limit_attempts = 0
+        max_attempts = self.max_retries + 1
+        while attempt < max_attempts:
             try:
                 response = requests.post(url, headers=headers, json=payload, timeout=180)
                 response.raise_for_status()
@@ -160,15 +170,31 @@ class VLLMClient:
                 return content_text
             except (requests.RequestException, KeyError, ValueError, IndexError) as exc:
                 last_exception = exc
+                status = getattr(getattr(exc, "response", None), "status_code", None)
+                rate_limited = status in (403, 429)
+                attempt += 1
+                if rate_limited:
+                    rate_limit_attempts += 1
+                    # Extra attempts beyond max_retries for rate limits.
+                    max_attempts = max(
+                        max_attempts, 1 + len(self.RATE_LIMIT_DELAYS)
+                    )
+                if attempt >= max_attempts:
+                    break
+                if rate_limited:
+                    delay = self.RATE_LIMIT_DELAYS[
+                        min(rate_limit_attempts - 1, len(self.RATE_LIMIT_DELAYS) - 1)
+                    ]
+                else:
+                    delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
                 logger.warning(
-                    "vLLM request failed (attempt {}/{}): {}",
-                    attempt + 1,
-                    self.max_retries + 1,
+                    "vLLM request failed (attempt {}/{}): {}; retrying in {:.0f}s",
+                    attempt,
+                    max_attempts,
                     exc,
+                    delay,
                 )
-                if attempt < self.max_retries:
-                    delay = min(self.base_delay * (2 ** attempt), self.max_delay)
-                    time.sleep(delay)
+                time.sleep(delay)
         raise RuntimeError(
-            f"vLLM request failed after {self.max_retries + 1} attempts"
+            f"vLLM request failed after {attempt} attempts"
         ) from last_exception
