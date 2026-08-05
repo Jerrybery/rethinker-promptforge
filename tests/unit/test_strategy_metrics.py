@@ -132,3 +132,37 @@ def test_aggregate_no_applicable_move_aside() -> None:
     )
     assert agg["move_aside_first_rate"] is None
     assert agg["presence_violation_rate"] == 0.0
+
+
+DECOY_META = {"decoy_labels": ["decoy_can"]}
+
+
+def test_decoy_picks_counted() -> None:
+    ep = _episode(
+        [
+            _output(MissionType.PICK_AND_PLACE, "decoy_can", "pot"),
+            _output(MissionType.PICK_AND_PLACE, "can", "pot"),
+        ]
+    )
+    m = episode_strategy_metrics(ep, _task(DECOY_META))
+    assert m["decoy_picks"] == 1
+    assert m["action_count"] == 2
+
+
+def test_decoy_pick_rate_aggregates() -> None:
+    per = [
+        {"action_count": 2, "presence_violations": 0,
+         "move_aside_first": None, "decoy_picks": 1},
+        {"action_count": 2, "presence_violations": 0,
+         "move_aside_first": None, "decoy_picks": 0},
+    ]
+    agg = aggregate_strategy_metrics(per)
+    assert agg["decoy_pick_rate"] == 0.25
+    assert agg["decoy_picks"] == 1
+
+
+def test_decoy_pick_rate_zero_without_decoys() -> None:
+    per = [{"action_count": 3, "presence_violations": 0,
+            "move_aside_first": None, "decoy_picks": 0}]
+    agg = aggregate_strategy_metrics(per)
+    assert agg["decoy_pick_rate"] == 0.0

@@ -13,6 +13,9 @@ prompt differences actually live:
   detection set (recorded by ``rollout_episode``).
 - ``action_count``: episode length; detects degenerate strategies (over-
   conservative loops vs. efficient sequences).
+- ``decoy_picks``: manipulation attempts targeting a declared decoy label
+  (metadata ``decoy_labels``) — picking the look-alike instead of the real
+  target executes fine but can never satisfy ``check_success``.
 """
 
 from __future__ import annotations
@@ -38,6 +41,10 @@ def episode_strategy_metrics(
         step.planner_output for step in episode.steps if step.planner_output
     ]
     violations = int((episode.metadata or {}).get("presence_violations", 0))
+    decoy_labels = set((task.metadata or {}).get("decoy_labels") or [])
+    decoy_picks = sum(
+        1 for a in actions if a.pick in decoy_labels
+    )
 
     move_aside_first: bool | None = None
     hidden_by = (task.metadata or {}).get("hidden_by") or {}
@@ -63,6 +70,7 @@ def episode_strategy_metrics(
         "action_count": len(actions),
         "presence_violations": violations,
         "move_aside_first": move_aside_first,
+        "decoy_picks": decoy_picks,
     }
 
 
@@ -74,6 +82,7 @@ def aggregate_strategy_metrics(per_episode: list[dict[str, Any]]) -> dict[str, A
     """
     total_actions = sum(e["action_count"] for e in per_episode)
     total_violations = sum(e["presence_violations"] for e in per_episode)
+    total_decoy_picks = sum(e.get("decoy_picks", 0) for e in per_episode)
     maf_values = [e["move_aside_first"] for e in per_episode]
     maf_valid = [v for v in maf_values if v is not None]
     return {
@@ -87,4 +96,8 @@ def aggregate_strategy_metrics(per_episode: list[dict[str, Any]]) -> dict[str, A
             total_actions / len(per_episode) if per_episode else 0.0
         ),
         "presence_violations": total_violations,
+        "decoy_pick_rate": (
+            total_decoy_picks / total_actions if total_actions else 0.0
+        ),
+        "decoy_picks": total_decoy_picks,
     }
