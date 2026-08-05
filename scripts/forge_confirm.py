@@ -25,12 +25,14 @@ import json
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SRC_DIR = REPO_ROOT / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
+from common.schema import Episode
 from loguru import logger
 
 from forge.env import SimEnv
@@ -41,6 +43,7 @@ from forge.strategy_metrics import (
     episode_strategy_metrics,
 )
 from forge.validator import rollout_episode
+from tasks.schema import TaskDefinition
 from llm.vllm_client import VLLMClient
 
 
@@ -53,9 +56,83 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--config", type=Path,
                    default=REPO_ROOT / "configs" / "models.local.yaml")
     p.add_argument("--episodes-per-task", type=int, default=6)
+    p.add_argument("--workers", type=int, default=2,
+                   help="parallel rollout worker processes (1 = serial)")
     p.add_argument("--max-rounds", type=int, default=10)
     p.add_argument("--out", type=Path, default=None)
     return p.parse_args()
+
+
+def _rollout_one(
+    env: Any, planner: Any, task: Any, text: str, max_rounds: int
+) -> tuple[Episode, bool, int, str, int]:
+    """One guarded rollout; returns (episode|None, success, steps, termination, violation)."""
+    planner.set_prompt_text(text)
+    violation = 0
+    try:
+        ep = rollout_episode(env, planner, task, max_rounds)
+        success = bool((ep.metadata or {}).get("success", False))
+        steps = len(ep.steps)
+        termination = (ep.metadata or {}).get("termination_reason") or ""
+    except Exception as exc:
+        logger.warning("rollout crashed ({}): {}", task.id, exc)
+        success, steps, termination, ep = False, 0, "error", None
+        if "not in the DINO label set" in str(exc):
+            violation = 1
+    return ep, success, steps, termination, violation
+
+
+def _pair_record(
+    ep: Any, tag: str, task: Any, k: int, success: bool, steps: int,
+    termination: str, violation: int,
+) -> dict:
+    strat = (
+        episode_strategy_metrics(ep, task)
+        if ep is not None
+        else {
+            "action_count": steps,
+            "presence_violations": violation,
+            "move_aside_first": None,
+        }
+    )
+    return {
+        "version": tag,
+        "task_id": task.id,
+        "round": k,
+        "success": success,
+        "steps": steps,
+        "termination": termination,
+        **strat,
+    }
+
+
+def _worker(payload: dict) -> list[dict]:
+    """Child-process worker: own SimEnv/planner, runs its (task, round) pairs.
+
+    Within a pair the A rollout precedes the B rollout, preserving the
+    interleaved A/B semantics of the serial version.
+    """
+    env = SimEnv(repo_root=REPO_ROOT)
+    planner = ForgePlannerAgent(
+        vllm_client=VLLMClient(config_path=payload["config_path"])
+    )
+    tasks = [TaskDefinition(**d) for d in payload["tasks"]]
+    records: list[dict] = []
+    for task_idx, k in payload["pairs"]:
+        task = tasks[task_idx]
+        for tag, text in (("A", payload["text_a"]), ("B", payload["text_b"])):
+            ep, success, steps, termination, violation = _rollout_one(
+                env, planner, task, text, payload["max_rounds"]
+            )
+            rec = _pair_record(ep, tag, task, k, success, steps, termination, violation)
+            records.append(rec)
+            print(
+                f"[w{payload['worker_id']}][{tag}] {task.id} r{k}: "
+                f"success={rec['success']} steps={rec['steps']}",
+                flush=True,
+            )
+    env.close()
+    return records
 
 
 def main() -> int:
@@ -68,50 +145,45 @@ def main() -> int:
         logger.error("no val tasks in {}", args.tasks)
         return 2
 
-    env = SimEnv(repo_root=REPO_ROOT)
-    planner = ForgePlannerAgent(vllm_client=VLLMClient(config_path=args.config))
-
     episodes: list[dict] = []
     t0 = datetime.now(timezone.utc).isoformat()
-    for task in tasks:
-        for k in range(args.episodes_per_task):
-            for tag, text in (("A", text_a), ("B", text_b)):
-                planner.set_prompt_text(text)
-                violation = 0
-                try:
-                    ep = rollout_episode(env, planner, task, args.max_rounds)
-                    success = bool((ep.metadata or {}).get("success", False))
-                    steps = len(ep.steps)
-                    termination = (ep.metadata or {}).get("termination_reason")
-                except Exception as exc:
-                    # A crashed rollout (e.g. planner emitted a label outside
-                    # the detection set) counts as a failed episode, matching
-                    # the forge runner's per-rollout guard.
-                    logger.warning("rollout crashed ({} {} r{}): {}", tag, task.id, k, exc)
-                    success, steps, termination = False, 0, "error"
-                    if "not in the DINO label set" in str(exc):
-                        violation = 1
-                strat = (
-                    episode_strategy_metrics(ep, task)
-                    if termination != "error"
-                    else {
-                        "action_count": steps,
-                        "presence_violations": violation,
-                        "move_aside_first": None,
-                    }
-                )
-                rec = {
-                    "version": tag,
-                    "task_id": task.id,
-                    "round": k,
-                    "success": success,
-                    "steps": steps,
-                    "termination": termination,
-                    **strat,
-                }
-                episodes.append(rec)
-                print(f"[{tag}] {task.id} r{k}: success={rec['success']} "
-                      f"steps={rec['steps']}", flush=True)
+    n_workers = max(1, int(args.workers))
+    if n_workers == 1:
+        env = SimEnv(repo_root=REPO_ROOT)
+        planner = ForgePlannerAgent(vllm_client=VLLMClient(config_path=args.config))
+        for ti, task in enumerate(tasks):
+            for k in range(args.episodes_per_task):
+                for tag, text in (("A", text_a), ("B", text_b)):
+                    ep, success, steps, termination, violation = _rollout_one(
+                        env, planner, task, text, args.max_rounds
+                    )
+                    rec = _pair_record(ep, tag, task, k, success, steps, termination, violation)
+                    episodes.append(rec)
+                    print(f"[{tag}] {task.id} r{k}: success={rec['success']} "
+                          f"steps={rec['steps']}", flush=True)
+        env.close()
+    else:
+        import concurrent.futures as cf
+        import multiprocessing as mp
+
+        pairs = [(ti, k) for ti in range(len(tasks)) for k in range(args.episodes_per_task)]
+        payloads = [
+            {
+                "worker_id": w,
+                "pairs": pairs[w::n_workers],
+                "tasks": [t.model_dump() for t in tasks],
+                "text_a": text_a,
+                "text_b": text_b,
+                "config_path": args.config,
+                "max_rounds": args.max_rounds,
+            }
+            for w in range(n_workers)
+        ]
+        ctx = mp.get_context("spawn")
+        with cf.ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as pool:
+            for worker_records in pool.map(_worker, payloads):
+                episodes.extend(worker_records)
+        episodes.sort(key=lambda e: (e["task_id"], e["round"], e["version"]))
 
     def rate(version: str, task_id: str | None = None) -> float:
         eps = [e for e in episodes if e["version"] == version
@@ -127,6 +199,7 @@ def main() -> int:
                     "action_count": e["action_count"],
                     "presence_violations": e["presence_violations"],
                     "move_aside_first": e["move_aside_first"],
+                    "decoy_picks": e.get("decoy_picks", 0),
                 }
                 for e in eps
             ]
@@ -144,6 +217,7 @@ def main() -> int:
         "finished": datetime.now(timezone.utc).isoformat(),
         "prompts": {"A": str(args.a), "B": str(args.b)},
         "episodes_per_task": args.episodes_per_task,
+        "workers": n_workers,
         "overall": {"A": rate("A"), "B": rate("B"),
                     "delta": rate("B") - rate("A"),
                     "A_strategy": strat_of("A"),
@@ -158,7 +232,6 @@ def main() -> int:
         args.out.parent.mkdir(parents=True, exist_ok=True)
         args.out.write_text(json.dumps(summary, indent=1), encoding="utf-8")
         print(f"report: {args.out}", flush=True)
-    env.close()
     return 0
 
 
