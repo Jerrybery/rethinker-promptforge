@@ -262,6 +262,89 @@ tasks:
         - 0.0
         - 0.0
         mirror_with_arm: true
+- id: forge-train-can-pot-occluded-hard
+  instruction: Move the can next to the pot. The can is hidden behind other
+    objects and is not visible; move the occluding objects aside one by one
+    to find it. Beware of look-alike decoy cans that are not the target.
+  mission_type: PICK_AND_PLACE
+  objects:
+  - can
+  - pot
+  - occluder1
+  - occluder2
+  - decoy_can
+  initial_scene:
+    task_name: move_can_pot_occluded_hard
+    embodiment:
+    - franka-panda
+    domain_randomization:
+      random_background: false
+      cluttered_table: false
+      clean_background_rate: 0
+      random_head_camera_dis: 0
+      random_table_height: 0
+      random_light: false
+      crazy_random_light_rate: 0
+    seed: 301
+    render_freq: 0
+    save_data: false
+    collect_data: false
+  success_criteria:
+  - can is placed next to the pot
+  - pot remains upright at its original position
+  metadata:
+    split: train
+    forge_role: prompt_training
+    category: forge_occlusion
+    difficulty: hard
+    occlusion_pattern: occ-cover-hidden-target-multi-decoy
+    occlusion_axes:
+      clutter: false
+      lighting: fixed
+      camera: static
+    occlusion_sources:
+    - two cups parked beside the target can cover it; the can stays hidden
+      from the detection set until BOTH occluders are moved aside
+    - a visually identical decoy can sits in plain sight; picking it
+      executes but cannot satisfy the success check
+    seed_range:
+    - 301
+    - 330
+    max_rounds: 10
+    allowed_actions:
+    - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
+    - REOBSERVE
+    - STOP
+    failure_criteria:
+    - can dropped outside the table workspace
+    - pot tipped over or pushed off its original position
+    - max_rounds exceeded
+    robottwin_task_name: move_can_pot_occluded_hard
+    robottwin_task_config: demo_clean
+    object_actors:
+      can: can
+      pot: pot
+      occluder1: occluder1
+      occluder2: occluder2
+      decoy_can: decoy
+    hidden_by:
+      can:
+      - occluder1
+      - occluder2
+    cover_radius: 0.25
+    decoy_labels:
+    - decoy_can
+    grasp_contact_point_id: true
+    grasp_pre_dis: 0.05
+    place_offsets:
+      pot:
+        offset:
+        - 0.18
+        - 0.0
+        - 0.0
+        mirror_with_arm: true
 - id: forge-val-empty-cup-noclutter-randomcam-randomlight
   instruction: Pick up the empty cup and place it upright on the coaster, despite
     the changing lighting and varying camera viewpoint.
@@ -322,6 +405,7 @@ tasks:
       cup: cup
       coaster: coaster
     grasp_contact_point_id: true
+    place_use_held_fp: true
 - id: forge-val-container-plate-randomcam-randomlight
   instruction: Pick up the container and place it on the plate, despite the
     clutter, changing lighting, and varying camera viewpoint.
@@ -341,7 +425,7 @@ tasks:
       random_table_height: 0
       random_light: true
       crazy_random_light_rate: 0.1
-    seed: 901
+    seed: 903
     render_freq: 0
     save_data: false
     collect_data: false
@@ -364,7 +448,7 @@ tasks:
     - randomized lighting casts shadows and glare that obscure the container
       and plate
     seed_range:
-    - 901
+    - 903
     - 929
     max_rounds: 8
     allowed_actions:
@@ -383,6 +467,7 @@ tasks:
       container: container
       plate: plate
     grasp_contact_point_id: true
+    place_use_held_fp: true
 - id: forge-val-object-stand-randomcam-randomlight
   instruction: Pick up the object and place it on the display stand, despite
     the clutter, changing lighting, and varying camera viewpoint.
@@ -444,6 +529,8 @@ tasks:
     object_actors:
       object: object
       displaystand: displaystand
+    lift_dz: 0.15
+    place_pre_dis: 0.1
 - id: forge-val-can-pot-occluded-randomcam-randomlight
   instruction: Move the can next to the pot, despite the clutter, changing
     lighting, and varying camera viewpoint. The can is hidden behind another
@@ -512,6 +599,89 @@ tasks:
       - occluder
     cover_radius: 0.25
     grasp_contact_point_id: true
+    place_offsets:
+      pot:
+        offset:
+        - 0.18
+        - 0.0
+        - 0.0
+        mirror_with_arm: true
+- id: forge-val-can-pot-occluded-hard-randomcam-randomlight
+  instruction: Move the can next to the pot. The can is hidden behind other
+    objects and is not visible; move the occluding objects aside one by one
+    to find it. Beware of look-alike decoy cans that are not the target.
+  mission_type: PICK_AND_PLACE
+  objects:
+  - can
+  - pot
+  - occluder1
+  - occluder2
+  - decoy_can
+  initial_scene:
+    task_name: move_can_pot_occluded_hard
+    embodiment:
+    - franka-panda
+    domain_randomization:
+      random_background: false
+      cluttered_table: false
+      clean_background_rate: 0
+      random_head_camera_dis: 0.1
+      random_table_height: 0
+      random_light: true
+      crazy_random_light_rate: 0.1
+    seed: 310
+    render_freq: 0
+    save_data: false
+    collect_data: false
+  success_criteria:
+  - can is placed next to the pot
+  - pot remains upright at its original position
+  metadata:
+    split: val
+    forge_role: prompt_validation
+    category: forge_occlusion
+    difficulty: hard
+    occlusion_pattern: occ-cover-hidden-target-multi-decoy-randomcam-randomlight
+    occlusion_axes:
+      clutter: false
+      lighting: fixed
+      camera: static
+    occlusion_sources:
+    - two cups parked beside the target can cover it; the can stays hidden
+      from the detection set until BOTH occluders are moved aside
+    - a visually identical decoy can sits in plain sight; picking it
+      executes but cannot satisfy the success check
+    seed_range:
+    - 310
+    - 340
+    max_rounds: 10
+    allowed_actions:
+    - PICK_AND_PLACE
+    - PICK_ONLY
+    - MOVE_ASIDE
+    - REOBSERVE
+    - STOP
+    failure_criteria:
+    - can dropped outside the table workspace
+    - pot tipped over or pushed off its original position
+    - max_rounds exceeded
+    robottwin_task_name: move_can_pot_occluded_hard
+    robottwin_task_config: demo_clean
+    object_actors:
+      can: can
+      pot: pot
+      occluder1: occluder1
+      occluder2: occluder2
+      decoy_can: decoy
+    hidden_by:
+      can:
+      - occluder1
+      - occluder2
+    cover_radius: 0.25
+    decoy_labels:
+    - decoy_can
+    grasp_contact_point_id: true
+    grasp_pre_dis: 0.05
     place_offsets:
       pot:
         offset:
